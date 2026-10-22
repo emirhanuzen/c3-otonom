@@ -16,15 +16,15 @@ Fiziksel İHA kullanılmaz. İHA'ları, gerçek İHA'larda çalışan ArduPilot 
 
 **ArduPlane SITL: Elazığ Havalimanı üzerinde uçan İHA**
 
-![SITL harita ve konsol](docs/image/otonom-1.png)
+![SITL harita ve konsol](docs/images/otonom-1.png)
 
 **Python ile canlı telemetri okuma**
 
-![Canlı telemetri](docs/image/otonom-3.png)
+![Canlı telemetri](docs/images/otonom-3.png)
 
 **10 İHA'nın telemetrisinin tek scriptle eş zamanlı izlenmesi**
 
-![Filo telemetri tablosu](docs/image/otonom-4.png)
+![Filo telemetri tablosu](docs/images/otonom-4.png)
 
 ## Planlanan mimari
 
