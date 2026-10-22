@@ -8,7 +8,7 @@ Fırat Üniversitesi Yazılım Mühendisliği bitirme projesi · 2026–2027
 
 ## Proje hakkında
 
-OTONOM-C3, 20 İHA'lık bir filoyu gerçek otopilot yazılımı (ArduPlane SITL) ve gerçek MAVLink protokolü üzerinden izleyen bir C3 sistemidir. Sistem; telemetriyi gerçek zamanlı işler, yakıt, irtifa, yasaklı bölge ve arıza gibi anomalileri tespit eder ve operatöre insan onaylı otonom kararlar (örneğin yeni rota önerisi) sunar.
+OTONOM-C3, 10 İHA'lık bir filoyu gerçek otopilot yazılımı (ArduPlane SITL) ve gerçek MAVLink protokolü üzerinden izleyen bir C3 sistemidir. Sistem; telemetriyi gerçek zamanlı işler, yakıt, irtifa, yasaklı bölge ve arıza gibi anomalileri tespit eder ve operatöre insan onaylı otonom kararlar (örneğin yeni rota önerisi) sunar.
 
 Fiziksel İHA kullanılmaz. İHA'ları, gerçek İHA'larda çalışan ArduPilot otopilot yazılımının bilgisayarda çalışan hali (SITL) yönetir. Operasyon bölgesi Elazığ'dır.
 
@@ -16,11 +16,15 @@ Fiziksel İHA kullanılmaz. İHA'ları, gerçek İHA'larda çalışan ArduPilot 
 
 **ArduPlane SITL: Elazığ Havalimanı üzerinde uçan İHA**
 
-![ArduPlane SITL: Elazığ Havalimanı üzerinde uçan İHA](docs/images/otonom-1.png)
+![SITL harita ve konsol](docs/image/otonom-1.png)
 
 **Python ile canlı telemetri okuma**
 
-![Python ile canlı telemetri okuma](docs/images/otonom-2.png)
+![Canlı telemetri](docs/image/otonom-3.png)
+
+**10 İHA'nın telemetrisinin tek scriptle eş zamanlı izlenmesi**
+
+![Filo telemetri tablosu](docs/image/otonom-4.png)
 
 ## Planlanan mimari
 
@@ -55,20 +59,27 @@ otonom-c3/
 - [x] Spring Boot proje iskeleti
 - [x] ArduPlane SITL kurulumu, Elazığ üzerinde uçuş
 - [x] pymavlink ile canlı telemetri okuma
+- [x] 10 İHA'lık filonun eş zamanlı izlenmesi ve bağlantı kaybı tespiti
 - [ ] Kenar adaptörü (MAVLink → JSON → RabbitMQ)
 - [ ] Spring Boot ile telemetri işleme ve PostGIS'e kayıt
 - [ ] Kural motoru ve alarm yönetimi
 - [ ] 2D harita ekranı
-- [ ] 20 İHA'lık filo
 - [ ] C3 haberleşme katmanı ve ileri özellikler
+- [ ] 20 İHA ile ölçeklenebilirlik testi
 
-## Deneyi çalıştırma
+## Deneyleri çalıştırma
 
-Ubuntu (WSL) terminalinde SITL'i başlatın:
+Ubuntu (WSL) terminalinde SITL'i başlatın. Tek İHA için:
 
 ```bash
 cd ~/ardupilot/ArduPlane
 sim_vehicle.py -v ArduPlane --custom-location=38.6069,39.2914,890,0 --console --map
+```
+
+10 İHA'lık filo için:
+
+```bash
+sim_vehicle.py -v ArduPlane --count 10 --auto-sysid --custom-location=38.6069,39.2914,890,0 --auto-offset-line 90,30 --console --map
 ```
 
 İkinci bir Ubuntu terminalinde telemetriyi okuyun:
@@ -76,7 +87,8 @@ sim_vehicle.py -v ArduPlane --custom-location=38.6069,39.2914,890,0 --console --
 ```bash
 source ~/venv-ardupilot/bin/activate
 cd experiments
-python3 read_telemetry.py
+python3 read_telemetry.py   # tek İHA
+python3 read_fleet.py       # filo (FLEET_SIZE ile ayarlanır)
 ```
 
 ## Akademik bilgi

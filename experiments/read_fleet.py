@@ -25,7 +25,7 @@ from pymavlink import mavutil
 # With --count N, sim_vehicle.py starts N SITL instances and shifts every port
 # of instance i by i * 10. SERIAL0 (5760, 5770, ...) is taken by MAVProxy,
 # so we use SERIAL1 (5762, 5772, ...). To grow the fleet, change FLEET_SIZE only.
-FLEET_SIZE = 3
+FLEET_SIZE = 10
 BASE_PORT = 5762
 PORT_STEP = 10
 
