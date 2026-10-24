@@ -8,9 +8,13 @@ What it does, in a single loop (no threads):
      aircraft heard from in the last STALE_AFTER_S seconds.
   4. Every 10 seconds, logs how many messages each aircraft got published.
 
+Data flow of one snapshot:
+  mavlink_reader (raw MAVLink messages) -> mavlink_mapper (DroneTelemetry)
+  -> schema (JSON) -> publisher (RabbitMQ)
+
 How to run (inside the Ubuntu / WSL terminal, while SITL and RabbitMQ are running):
   cd /mnt/c/Users/Emirhan/Desktop/otonom-c3/edge-adapter
-  source .venv/bin/activate
+  source ~/venv-edge/bin/activate
   python -m edge_adapter.main
 
 Stop with Ctrl+C.
@@ -19,8 +23,10 @@ Stop with Ctrl+C.
 import logging
 import time
 from collections import Counter, defaultdict
+from datetime import datetime, timezone
 
 from edge_adapter.config import load_config
+from edge_adapter.mavlink_mapper import to_telemetry
 from edge_adapter.mavlink_reader import MavlinkReader
 from edge_adapter.publisher import Publisher
 from edge_adapter.schema import build_snapshot, to_json
@@ -66,8 +72,10 @@ def run():
 
             if now >= next_publish:
                 if publisher.connected:
+                    timestamp = datetime.now(timezone.utc)
                     for drone_id, state in reader.fresh_drones(config.stale_after_s):
-                        body = to_json(build_snapshot(drone_id, state, seq[drone_id]))
+                        telemetry = to_telemetry(drone_id, state)
+                        body = to_json(build_snapshot(telemetry, seq[drone_id], timestamp))
                         # seq grows even if this publish fails, so consumers can
                         # see the gap and know that snapshots were lost.
                         seq[drone_id] += 1

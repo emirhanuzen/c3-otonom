@@ -16,10 +16,12 @@ WSL Ubuntu terminalinde:
 ```sh
 sudo apt install python3-venv          # venv modülü yoksa bir kez
 cd /mnt/c/Users/Emirhan/Desktop/otonom-c3/edge-adapter
-python3 -m venv .venv
-source .venv/bin/activate
+python3 -m venv ~/venv-edge
+source ~/venv-edge/bin/activate
 pip install -r requirements.txt
 ```
+
+Sanal ortam, Windows dosya sistemindeki (`/mnt/c`) yavaşlık ve izin sorunlarından kaçınmak için WSL ev dizininde (`~/venv-edge`) tutulur.
 
 ## Çalıştırma
 
@@ -29,11 +31,35 @@ pip install -r requirements.txt
 
 ```sh
 cd /mnt/c/Users/Emirhan/Desktop/otonom-c3/edge-adapter
-source .venv/bin/activate
+source ~/venv-edge/bin/activate
 python -m edge_adapter.main
 ```
 
 Durdurmak için Ctrl+C.
+
+## Testler
+
+Testler SITL ya da RabbitMQ gerektirmez. Geliştirme bağımlılıklarını bir kez kur, sonra `edge-adapter/` klasöründen çalıştır:
+
+```sh
+cd /mnt/c/Users/Emirhan/Desktop/otonom-c3/edge-adapter
+source ~/venv-edge/bin/activate
+pip install -r requirements-dev.txt
+pytest                                   # bütün testler
+pytest tests/test_schema.py              # tek dosya
+pytest tests/test_mavlink_mapper.py -k heading   # adında "heading" geçen testler
+```
+
+## Katmanlar
+
+```
+mavlink_reader  ->  mavlink_mapper  ->  schema  ->  publisher
+(ham MAVLink)       (DroneTelemetry)    (JSON)      (RabbitMQ)
+```
+
+- `telemetry.py`: protokolden bağımsız alan modeli (`DroneTelemetry`); dış kütüphane import etmez.
+- `mavlink_mapper.py`: MAVLink'e özel bütün bilgi (birim dönüşümleri, 255/65535 "bilinmiyor" değerleri, uçuş modu ve armed çözümü).
+- `schema.py`: `DroneTelemetry`'den JSON anlık görüntüsü üretir; MAVLink'i bilmez.
 
 Başlama sırası önemli değil. Adaptör, açık olmayan İHA'lara 5 saniyede bir, RabbitMQ'ya ise artan aralıklarla (en fazla 30 saniye) yeniden bağlanmayı dener.
 
