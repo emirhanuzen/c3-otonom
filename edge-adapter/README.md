@@ -53,8 +53,8 @@ pytest tests/test_mavlink_mapper.py -k heading   # adında "heading" geçen test
 ## Katmanlar
 
 ```
-mavlink_reader  ->  mavlink_mapper  ->  schema  ->  publisher
-(ham MAVLink)       (DroneTelemetry)    (JSON)      (RabbitMQ)
+mavlink_reader  ->  mavlink_mapper  ->  schema  ->  outbox          ->  publisher
+(ham MAVLink)       (DroneTelemetry)    (JSON)      (yerel tampon)      (RabbitMQ)
 ```
 
 - `telemetry.py`: protokolden bağımsız alan modeli (`DroneTelemetry`); dış kütüphane import etmez.
@@ -78,10 +78,21 @@ Değerler ortam değişkenlerinden okunur. Proje kökündeki `.env` dosyası oto
 | `SITL_PORT_STEP` | `10` | Ardışık SITL örnekleri arasındaki port farkı |
 | `PUBLISH_RATE_HZ` | `10` | İHA başına saniyedeki anlık görüntü sayısı |
 | `STALE_AFTER_S` | `3` | Bu kadar saniye veri gelmeyen İHA için yayın yapılmaz |
+| `OUTBOX_MAX_MESSAGES` | `6000` | Yerel tamponun kapasitesi; dolunca en eski mesaj atılır |
+| `OUTBOX_FLUSH_BATCH` | `200` | Tek döngüde tampondan gönderilecek en fazla mesaj |
+| `RABBITMQ_MAX_BACKOFF_S` | `5` | RabbitMQ'ya yeniden bağlanma beklemesinin üst sınırı (saniye) |
 
 ## Mesaj formatı
 
-Routing key `telemetry.<droneId>`, `content_type` `application/json`, mesajlar persistent. Adaptör kuyruk tanımlamaz; exchange'e bağlı bir kuyruk olmadığı sürece RabbitMQ mesajları düşürür.
+Routing key `telemetry.<droneId>`, `content_type` `application/json`, mesajlar persistent.
+
+Adaptör kuyruk tanımlamaz. Mesajlar `mandatory` ile gönderilir; exchange'e bağlı bir kuyruk yoksa RabbitMQ mesajı geri döndürür, adaptör bunu "unroutable" olarak sayar ve loglar, tekrar denemez.
+
+## Teslim garantisi
+
+Anlık görüntüler önce bellekteki sınırlı bir tampona (outbox) yazılır ve RabbitMQ onayladıktan (publisher confirms) sonra tampondan çıkar. RabbitMQ kapalıyken mesajlar tamponda bekler, bağlantı gelince sırayla gönderilir; geç giden mesajlar kendi `seq` ve `timestamp` değerlerini korur. Tampon dolarsa en eski mesajlar atılır. Adaptör süreci çökerse tampondaki mesajlar kaybolur. Ayrıntılar: `docs/adr/0001-kenar-adaptoru-ve-rabbitmq.md`.
+
+10 saniyelik özet log satırı, İHA başına yayınlanan mesajların yanında tamponda bekleyen, taşma yüzünden atılan ve unroutable olan mesaj sayılarını gösterir.
 
 ```json
 {
@@ -100,4 +111,4 @@ Routing key `telemetry.<droneId>`, `content_type` `application/json`, mesajlar p
 - Birimler: metre, m/s, derece, volt.
 - Henüz gelmemiş ya da otopilotun "bilinmiyor" olarak bildirdiği alanlar `null` olur.
 - `fixType`, MAVLink `GPS_FIX_TYPE` değeridir (0 GPS yok, 1 fix yok, 2 2D, 3 3D, ...).
-- `seq` her İHA için 0'dan başlar ve yayın başarısız olsa da artar; tüketici aradaki boşluktan kayıp mesajı anlayabilir.
+- `seq` her İHA için 0'dan başlar ve mesaj üretilirken atanır; tampon taşması ya da unroutable yüzünden kaybolan mesajlar tüketicide `seq` boşluğu olarak görünür.

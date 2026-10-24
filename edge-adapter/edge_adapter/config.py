@@ -35,6 +35,11 @@ class Config:
     publish_rate_hz: float  # snapshots per second, per aircraft
     stale_after_s: float    # seconds without any message before an aircraft is skipped
 
+    # 6000 = 10 aircraft x 10 Hz x 60 s: one minute of broker outage without loss.
+    outbox_max_messages: int
+    outbox_flush_batch: int       # at most this many buffered messages are sent per loop
+    rabbitmq_max_backoff_s: float  # upper limit of the wait between two reconnect attempts
+
     @property
     def connection_strings(self):
         """One MAVLink connection string per aircraft of the fleet."""
@@ -62,9 +67,18 @@ def load_config():
         sitl_port_step=int(_get("SITL_PORT_STEP", "10")),
         publish_rate_hz=float(_get("PUBLISH_RATE_HZ", "10")),
         stale_after_s=float(_get("STALE_AFTER_S", "3")),
+        outbox_max_messages=int(_get("OUTBOX_MAX_MESSAGES", "6000")),
+        outbox_flush_batch=int(_get("OUTBOX_FLUSH_BATCH", "200")),
+        rabbitmq_max_backoff_s=float(_get("RABBITMQ_MAX_BACKOFF_S", "5")),
     )
     if config.fleet_size < 1:
         raise RuntimeError("FLEET_SIZE must be at least 1")
     if config.publish_rate_hz <= 0:
         raise RuntimeError("PUBLISH_RATE_HZ must be greater than 0")
+    if config.outbox_max_messages < 1:
+        raise RuntimeError("OUTBOX_MAX_MESSAGES must be at least 1")
+    if config.outbox_flush_batch < 1:
+        raise RuntimeError("OUTBOX_FLUSH_BATCH must be at least 1")
+    if config.rabbitmq_max_backoff_s <= 0:
+        raise RuntimeError("RABBITMQ_MAX_BACKOFF_S must be greater than 0")
     return config

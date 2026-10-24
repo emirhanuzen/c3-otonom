@@ -19,6 +19,30 @@ Kabul edildi (2026-10-22)
 - Komutlar ters yönde aynı yoldan akacak: çekirdek → RabbitMQ → adaptör → İHA.
 - İHA kimliği MAVLink System ID'sinden alınacak ve aynı İHA'ya ait mesajların sırası korunacak.
 
+## Teslim garantileri
+
+### Adaptör tarafı
+
+- Adaptör telemetriyi **en az bir kez** (at-least-once) teslim eder:
+  - Her anlık görüntü önce bellekteki sınırlı bir yerel tampona (outbox) yazılır.
+  - RabbitMQ **publisher confirms** ile mesajı onaylamadan tampondan çıkmaz. Reddedilen (nack) ya da bağlantı koptuğu için onaylanmayan mesaj, sırası bozulmadan tampona geri konur ve bağlantı gelince yeniden gönderilir.
+  - Mesajlar `mandatory` bayrağıyla gönderilir. Hiçbir kuyruğa yönlendirilemeyen mesaj sessizce kaybolmaz; adaptör tarafından sayılır ve loglanır. Gidecek kuyruk olmadığı için tekrar denenmez.
+- `seq` ve `timestamp` mesaj üretilirken atanır. Tampondan geç gönderilen mesaj, ölçüldüğü anı ve sırasını korur.
+- Tampon sınırlıdır (varsayılan 6000 mesaj, 10 İHA x 10 Hz ile yaklaşık 1 dakika). Taşarsa en eski mesajlar atılır; çünkü taze telemetri eskisinden değerlidir. Atılan mesajlar tüketicide ilgili İHA'nın `seq` dizisinde boşluk olarak görünür, böylece kayıp fark edilir.
+- **Bilinen sınırlama:** Tampon yalnızca bellektedir. Adaptör süreci çökerse henüz onaylanmamış mesajlar kaybolur.
+
+### Tüketici tarafı (ileride Spring Boot)
+
+- En az bir kez teslim, aynı mesajın birden fazla gelebileceği anlamına gelir (örneğin onay yolda kaybolup mesaj yeniden gönderildiğinde).
+- Tüketici **manuel ack** kullanır: mesajı ancak işleyip kaydettikten sonra onaylar. Çökme durumunda onaylanmamış mesaj kuyrukta kalır ve yeniden teslim edilir.
+- İşleme **tekrar edilebilir** (idempotent) olur: `(droneId, seq)` çifti mesajın tekil kimliğidir. Daha önce işlenmiş bir çift geldiğinde mesaj yok sayılır ve yalnızca onaylanır.
+
+### Geç gelen telemetri
+
+- Kesinti sonrasında tampondan gelen mesajlar geçmişe aittir.
+- Geç gelen telemetri yine de veritabanına kaydedilir; uçuş geçmişi eksiksiz kalır.
+- Mesajın yaşı (`timestamp` ile alınma anı arasındaki fark) belirli bir eşiği (yaklaşık 2 saniye) aşıyorsa mesaj **canlı kural motoruna girmez**. Böylece eski bir konum ya da yakıt değeri yüzünden yanlış anomali uyarısı ya da otonom karar üretilmez.
+
 ## Değerlendirilen alternatifler
 
 1. **Her şeyi Java ile yazmak.** Tek dil kullanılmış olurdu, ancak Java'daki MAVLink kütüphaneleri pymavlink kadar olgun ve iyi belgelenmiş değil. Bu yüzden seçilmedi.
