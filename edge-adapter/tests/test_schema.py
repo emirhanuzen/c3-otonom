@@ -7,6 +7,7 @@ from edge_adapter.schema import SCHEMA_VERSION, build_snapshot, to_json
 from edge_adapter.telemetry import Battery, DroneTelemetry, Gps, Position, Status, Velocity
 
 TIMESTAMP = datetime(2026, 10, 24, 12, 34, 56, 789123, tzinfo=timezone.utc)
+SESSION_ID = "0b6f1c2e-5d4a-4e8b-9a37-2f1d6c8e4b90"
 
 
 def full_telemetry():
@@ -23,16 +24,17 @@ def full_telemetry():
 
 def snapshot_of(telemetry, seq=42, timestamp=TIMESTAMP):
     # Go through the real JSON bytes, so we test what consumers actually receive.
-    return json.loads(to_json(build_snapshot(telemetry, seq, timestamp)))
+    return json.loads(to_json(build_snapshot(telemetry, SESSION_ID, seq, timestamp)))
 
 
 def test_top_level_fields():
     snap = snapshot_of(full_telemetry())
-    assert snap["schemaVersion"] == SCHEMA_VERSION == 1
+    assert snap["schemaVersion"] == SCHEMA_VERSION == 2
     assert snap["droneId"] == 3
+    assert snap["sessionId"] == SESSION_ID
     assert snap["seq"] == 42
     assert snap["timestamp"] == "2026-10-24T12:34:56.789Z"
-    assert set(snap) == {"schemaVersion", "droneId", "seq", "timestamp",
+    assert set(snap) == {"schemaVersion", "droneId", "sessionId", "seq", "timestamp",
                          "position", "velocity", "battery", "gps", "status"}
 
 
@@ -66,7 +68,7 @@ def test_unknown_values_are_null():
     assert snap["gps"] == {"fixType": None, "satellites": None}
     assert snap["status"] == {"mode": None, "armed": None}
     # null in the JSON text itself, not just a missing key.
-    assert b'"lat":null' in to_json(build_snapshot(DroneTelemetry(drone_id=7), 0, TIMESTAMP))
+    assert b'"lat":null' in to_json(build_snapshot(DroneTelemetry(drone_id=7), SESSION_ID, 0, TIMESTAMP))
 
 
 def test_armed_false_is_not_null():

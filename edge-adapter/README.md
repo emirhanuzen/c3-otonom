@@ -96,8 +96,9 @@ Anlık görüntüler önce bellekteki sınırlı bir tampona (outbox) yazılır 
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "droneId": 1,
+  "sessionId": "0b6f1c2e-5d4a-4e8b-9a37-2f1d6c8e4b90",
   "seq": 42,
   "timestamp": "2026-10-24T12:34:56.789Z",
   "position": {"lat": 38.6063, "lon": 39.2914, "altMsl": 1012.3, "altRel": 100.2, "heading": 87.5},
@@ -111,4 +112,5 @@ Anlık görüntüler önce bellekteki sınırlı bir tampona (outbox) yazılır 
 - Birimler: metre, m/s, derece, volt.
 - Henüz gelmemiş ya da otopilotun "bilinmiyor" olarak bildirdiği alanlar `null` olur.
 - `fixType`, MAVLink `GPS_FIX_TYPE` değeridir (0 GPS yok, 1 fix yok, 2 2D, 3 3D, ...).
-- `seq` her İHA için 0'dan başlar ve mesaj üretilirken atanır; tampon taşması ya da unroutable yüzünden kaybolan mesajlar tüketicide `seq` boşluğu olarak görünür.
+- `sessionId`, adaptör her başladığında bir kez üretilen rastgele UUID'dir; adaptör çalıştığı sürece değişmez.
+- `seq` her adaptör oturumunda her İHA için 0'dan başlar ve mesaj üretilirken atanır; tampon taşması ya da unroutable yüzünden kaybolan mesajlar tüketicide `seq` boşluğu olarak görünür.

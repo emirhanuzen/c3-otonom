@@ -24,6 +24,7 @@ Stop with Ctrl+C.
 
 import logging
 import time
+import uuid
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 
@@ -52,6 +53,9 @@ def run():
     logging.getLogger("pika").setLevel(logging.CRITICAL)
 
     config = load_config()
+    # seq restarts at 0 on every run, so (droneId, sessionId, seq) identifies a message.
+    session_id = str(uuid.uuid4())
+    log.info("Session %s", session_id)
     log.info("Fleet of %d aircraft on %s, publishing at %s Hz",
              config.fleet_size, ", ".join(config.connection_strings), config.publish_rate_hz)
 
@@ -83,7 +87,7 @@ def run():
                 timestamp = datetime.now(timezone.utc)
                 for drone_id, state in reader.fresh_drones(config.stale_after_s):
                     telemetry = to_telemetry(drone_id, state)
-                    outbox.append(drone_id, to_json(build_snapshot(telemetry, seq[drone_id], timestamp)))
+                    outbox.append(drone_id, to_json(build_snapshot(telemetry, session_id, seq[drone_id], timestamp)))
                     seq[drone_id] += 1
                 next_publish += publish_period
                 # After a long stall (for example, a slow reconnect) do not try

@@ -9,7 +9,7 @@ degrees and volts; unknown values become null.
 import json
 from datetime import timezone
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # Decimal places kept in the snapshot. 7 decimals of a degree is ~1 cm,
 # the precision MAVLink itself sends lat/lon with.
@@ -29,13 +29,18 @@ def format_timestamp(timestamp):
     return timestamp.astimezone(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
-def build_snapshot(telemetry, seq, timestamp):
-    """Build the snapshot dictionary of one aircraft."""
+def build_snapshot(telemetry, session_id, seq, timestamp):
+    """Build the snapshot dictionary of one aircraft.
+
+    session_id is generated once per adapter run by the caller, so tests can
+    pass a fixed value.
+    """
     position = telemetry.position
     velocity = telemetry.velocity
     return {
         "schemaVersion": SCHEMA_VERSION,
         "droneId": telemetry.drone_id,
+        "sessionId": session_id,
         "seq": seq,
         "timestamp": format_timestamp(timestamp),
         "position": {

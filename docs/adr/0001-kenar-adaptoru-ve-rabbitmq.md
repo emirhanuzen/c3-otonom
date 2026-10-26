@@ -28,6 +28,7 @@ Kabul edildi (2026-10-22)
   - RabbitMQ **publisher confirms** ile mesajı onaylamadan tampondan çıkmaz. Reddedilen (nack) ya da bağlantı koptuğu için onaylanmayan mesaj, sırası bozulmadan tampona geri konur ve bağlantı gelince yeniden gönderilir.
   - Mesajlar `mandatory` bayrağıyla gönderilir. Hiçbir kuyruğa yönlendirilemeyen mesaj sessizce kaybolmaz; adaptör tarafından sayılır ve loglanır. Gidecek kuyruk olmadığı için tekrar denenmez.
 - `seq` ve `timestamp` mesaj üretilirken atanır. Tampondan geç gönderilen mesaj, ölçüldüğü anı ve sırasını korur.
+- `seq` her adaptör oturumunda 0'dan başlar. Adaptör her başladığında rastgele bir oturum kimliği (`sessionId`, UUID) üretir ve her mesaja ekler; bu değer süreç çalıştığı sürece değişmez.
 - Tampon sınırlıdır (varsayılan 6000 mesaj, 10 İHA x 10 Hz ile yaklaşık 1 dakika). Taşarsa en eski mesajlar atılır; çünkü taze telemetri eskisinden değerlidir. Atılan mesajlar tüketicide ilgili İHA'nın `seq` dizisinde boşluk olarak görünür, böylece kayıp fark edilir.
 - **Bilinen sınırlama:** Tampon yalnızca bellektedir. Adaptör süreci çökerse henüz onaylanmamış mesajlar kaybolur.
 
@@ -35,7 +36,7 @@ Kabul edildi (2026-10-22)
 
 - En az bir kez teslim, aynı mesajın birden fazla gelebileceği anlamına gelir (örneğin onay yolda kaybolup mesaj yeniden gönderildiğinde).
 - Tüketici **manuel ack** kullanır: mesajı ancak işleyip kaydettikten sonra onaylar. Çökme durumunda onaylanmamış mesaj kuyrukta kalır ve yeniden teslim edilir.
-- İşleme **tekrar edilebilir** (idempotent) olur: `(droneId, seq)` çifti mesajın tekil kimliğidir. Daha önce işlenmiş bir çift geldiğinde mesaj yok sayılır ve yalnızca onaylanır.
+- İşleme **tekrar edilebilir** (idempotent) olur: benzersizlik `(droneId, sessionId, seq)` üçlüsü üzerinden yapılır; `seq` yeniden başlatmada sıfırlandığı için tek başına `(droneId, seq)` yetmez. Daha önce işlenmiş bir üçlü geldiğinde mesaj yok sayılır ve yalnızca onaylanır.
 
 ### Geç gelen telemetri
 
