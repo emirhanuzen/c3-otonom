@@ -11,7 +11,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
-public interface TelemetryRepository extends JpaRepository<TelemetryRecord, Long> {
+public interface TelemetryRepository extends JpaRepository<TelemetryEntity, Long> {
 
 	/**
 	 * Returns the given keys that are already stored, in a single query.

@@ -23,7 +23,7 @@ import org.locationtech.jts.geom.Point;
 @Getter
 @Setter
 @NoArgsConstructor
-public class TelemetryRecord {
+public class TelemetryEntity {
 
 	// SEQUENCE (not IDENTITY) so Hibernate can batch the inserts. allocationSize
 	// must equal the sequence's INCREMENT BY.

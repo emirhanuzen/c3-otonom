@@ -15,9 +15,9 @@ import java.util.Set;
 import java.util.UUID;
 
 import com.otonomc3.core.config.TelemetryProperties;
-import com.otonomc3.core.telemetry.dto.TelemetryMessage;
+import com.otonomc3.core.telemetry.dto.TelemetryMessageDto;
 import com.otonomc3.core.telemetry.persistence.TelemetryKey;
-import com.otonomc3.core.telemetry.persistence.TelemetryRecord;
+import com.otonomc3.core.telemetry.persistence.TelemetryEntity;
 import com.otonomc3.core.telemetry.persistence.TelemetryRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -37,7 +37,7 @@ class TelemetryServiceTest {
 	private TelemetryRepository repository;
 
 	@Captor
-	private ArgumentCaptor<List<TelemetryRecord>> savedCaptor;
+	private ArgumentCaptor<List<TelemetryEntity>> savedCaptor;
 
 	@Captor
 	private ArgumentCaptor<Collection<TelemetryKey>> queriedCaptor;
@@ -66,9 +66,9 @@ class TelemetryServiceTest {
 				message(1, 2, NOW.minusSeconds(5))), NOW);
 
 		verify(repository).saveAllAndFlush(savedCaptor.capture());
-		List<TelemetryRecord> saved = savedCaptor.getValue();
-		assertThat(saved).extracting(TelemetryRecord::isLate).containsExactly(false, true);
-		assertThat(saved).extracting(TelemetryRecord::getReceivedAt).containsOnly(NOW);
+		List<TelemetryEntity> saved = savedCaptor.getValue();
+		assertThat(saved).extracting(TelemetryEntity::isLate).containsExactly(false, true);
+		assertThat(saved).extracting(TelemetryEntity::getReceivedAt).containsOnly(NOW);
 	}
 
 	// --- seq gaps ----------------------------------------------------------------
@@ -94,7 +94,7 @@ class TelemetryServiceTest {
 		service.trackSeq(message(1, 10, NOW));
 
 		assertThat(service.trackSeq(message(2, 50, NOW))).isZero();
-		assertThat(service.trackSeq(new TelemetryMessage(2, UUID.randomUUID(), 1, 500L, NOW,
+		assertThat(service.trackSeq(new TelemetryMessageDto(2, UUID.randomUUID(), 1, 500L, NOW,
 				null, null, null, null, null))).isZero();
 		assertThat(service.trackSeq(message(1, 11, NOW))).isZero();
 	}
@@ -111,7 +111,7 @@ class TelemetryServiceTest {
 		verify(repository).findExistingKeys(queriedCaptor.capture());
 		assertThat(queriedCaptor.getValue()).containsExactly(key(1, 1), key(1, 2));
 		verify(repository).saveAllAndFlush(savedCaptor.capture());
-		assertThat(savedCaptor.getValue()).extracting(TelemetryRecord::key).containsExactly(key(1, 1), key(1, 2));
+		assertThat(savedCaptor.getValue()).extracting(TelemetryEntity::key).containsExactly(key(1, 1), key(1, 2));
 	}
 
 	@Test
@@ -121,7 +121,7 @@ class TelemetryServiceTest {
 		service.process(List.of(message(1, 1, NOW), message(1, 2, NOW)), NOW);
 
 		verify(repository).saveAllAndFlush(savedCaptor.capture());
-		assertThat(savedCaptor.getValue()).extracting(TelemetryRecord::key).containsExactly(key(1, 2));
+		assertThat(savedCaptor.getValue()).extracting(TelemetryEntity::key).containsExactly(key(1, 2));
 	}
 
 	@Test
@@ -137,30 +137,30 @@ class TelemetryServiceTest {
 	void invalidMessagesAreSkipped() {
 		service.process(List.of(
 				message(0, 1, NOW),
-				new TelemetryMessage(2, null, 1, 2L, NOW, null, null, null, null, null),
-				new TelemetryMessage(2, SESSION, 1, 3L, null, null, null, null, null, null),
+				new TelemetryMessageDto(2, null, 1, 2L, NOW, null, null, null, null, null),
+				new TelemetryMessageDto(2, SESSION, 1, 3L, null, null, null, null, null, null),
 				message(1, 4, NOW)), NOW);
 
 		verify(repository).saveAllAndFlush(savedCaptor.capture());
-		assertThat(savedCaptor.getValue()).extracting(TelemetryRecord::key).containsExactly(key(1, 4));
+		assertThat(savedCaptor.getValue()).extracting(TelemetryEntity::key).containsExactly(key(1, 4));
 	}
 
 	@Test
 	void positionIsLonLatPoint() {
-		TelemetryMessage message = new TelemetryMessage(2, SESSION, 1, 1L, NOW,
-				new TelemetryMessage.Position(39.92, 32.85, 950.0, 50.0, 90.0), null, null, null, null);
+		TelemetryMessageDto message = new TelemetryMessageDto(2, SESSION, 1, 1L, NOW,
+				new TelemetryMessageDto.Position(39.92, 32.85, 950.0, 50.0, 90.0), null, null, null, null);
 
 		service.process(List.of(message), NOW);
 
 		verify(repository).saveAllAndFlush(savedCaptor.capture());
-		TelemetryRecord saved = savedCaptor.getValue().getFirst();
+		TelemetryEntity saved = savedCaptor.getValue().getFirst();
 		assertThat(saved.getPosition().getX()).isEqualTo(32.85);
 		assertThat(saved.getPosition().getY()).isEqualTo(39.92);
 		assertThat(saved.getPosition().getSRID()).isEqualTo(4326);
 	}
 
-	private static TelemetryMessage message(int droneId, long seq, Instant timestamp) {
-		return new TelemetryMessage(2, SESSION, droneId, seq, timestamp, null, null, null, null, null);
+	private static TelemetryMessageDto message(int droneId, long seq, Instant timestamp) {
+		return new TelemetryMessageDto(2, SESSION, droneId, seq, timestamp, null, null, null, null, null);
 	}
 
 	private static TelemetryKey key(int droneId, long seq) {

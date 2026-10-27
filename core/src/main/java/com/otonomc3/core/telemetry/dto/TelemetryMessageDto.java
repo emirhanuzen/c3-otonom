@@ -12,7 +12,7 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
  * value is unknown; unknown JSON fields are ignored so newer publishers can add fields.
  */
 @JsonIgnoreProperties(ignoreUnknown = true)
-public record TelemetryMessage(
+public record TelemetryMessageDto(
 		Integer schemaVersion,
 		UUID sessionId,
 		Integer droneId,

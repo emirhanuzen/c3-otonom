@@ -8,7 +8,7 @@ import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.json.JsonMapper;
 
-class TelemetryMessageTest {
+class TelemetryMessageDtoTest {
 
 	private final JsonMapper jsonMapper = JsonMapper.builder().build();
 
@@ -25,7 +25,7 @@ class TelemetryMessageTest {
 				 "someFutureField":{"x":1}}
 				""";
 
-		TelemetryMessage message = jsonMapper.readValue(json, TelemetryMessage.class);
+		TelemetryMessageDto message = jsonMapper.readValue(json, TelemetryMessageDto.class);
 
 		assertThat(message.schemaVersion()).isEqualTo(2);
 		assertThat(message.droneId()).isEqualTo(3);
@@ -33,11 +33,11 @@ class TelemetryMessageTest {
 		assertThat(message.seq()).isEqualTo(42L);
 		assertThat(message.timestamp()).isEqualTo(Instant.parse("2026-10-24T12:34:56.789Z"));
 		assertThat(message.position()).isEqualTo(
-				new TelemetryMessage.Position(39.9207123, 32.8541234, 950.12, 50.5, 271.3));
-		assertThat(message.velocity()).isEqualTo(new TelemetryMessage.Velocity(12.34, null, -0.5));
-		assertThat(message.battery()).isEqualTo(new TelemetryMessage.Battery(87, 12.45));
-		assertThat(message.gps()).isEqualTo(new TelemetryMessage.Gps(3, 14));
-		assertThat(message.status()).isEqualTo(new TelemetryMessage.Status("AUTO", true));
+				new TelemetryMessageDto.Position(39.9207123, 32.8541234, 950.12, 50.5, 271.3));
+		assertThat(message.velocity()).isEqualTo(new TelemetryMessageDto.Velocity(12.34, null, -0.5));
+		assertThat(message.battery()).isEqualTo(new TelemetryMessageDto.Battery(87, 12.45));
+		assertThat(message.gps()).isEqualTo(new TelemetryMessageDto.Gps(3, 14));
+		assertThat(message.status()).isEqualTo(new TelemetryMessageDto.Status("AUTO", true));
 	}
 
 	@Test
@@ -47,7 +47,7 @@ class TelemetryMessageTest {
 				 "timestamp":"2026-10-24T12:34:56.789Z","position":null}
 				""";
 
-		TelemetryMessage message = jsonMapper.readValue(json, TelemetryMessage.class);
+		TelemetryMessageDto message = jsonMapper.readValue(json, TelemetryMessageDto.class);
 
 		assertThat(message.position()).isNull();
 		assertThat(message.velocity()).isNull();

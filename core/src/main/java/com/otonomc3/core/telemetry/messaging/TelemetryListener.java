@@ -6,7 +6,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import com.otonomc3.core.config.RabbitConfig;
-import com.otonomc3.core.telemetry.dto.TelemetryMessage;
+import com.otonomc3.core.telemetry.dto.TelemetryMessageDto;
 import com.otonomc3.core.telemetry.service.TelemetryService;
 import com.otonomc3.core.telemetry.service.TelemetryStats;
 import lombok.extern.slf4j.Slf4j;
@@ -53,10 +53,10 @@ public class TelemetryListener {
 		Instant receivedAt = Instant.now();
 		stats.addReceived(batch.size());
 
-		List<TelemetryMessage> parsed = new ArrayList<>(batch.size());
+		List<TelemetryMessageDto> parsed = new ArrayList<>(batch.size());
 		List<Message> rejected = new ArrayList<>();
 		for (Message message : batch) {
-			TelemetryMessage telemetry = parse(message);
+			TelemetryMessageDto telemetry = parse(message);
 			if (telemetry != null) {
 				parsed.add(telemetry);
 			} else {
@@ -79,14 +79,14 @@ public class TelemetryListener {
 	}
 
 	/** Returns null, after logging, when the message is not valid schema version 2 JSON. */
-	private TelemetryMessage parse(Message message) {
+	private TelemetryMessageDto parse(Message message) {
 		String reason;
 		try {
-			TelemetryMessage telemetry = jsonMapper.readValue(message.getBody(), TelemetryMessage.class);
+			TelemetryMessageDto telemetry = jsonMapper.readValue(message.getBody(), TelemetryMessageDto.class);
 			if (telemetry == null) {
 				reason = "empty message";
 			} else if (telemetry.schemaVersion() == null
-					|| telemetry.schemaVersion() != TelemetryMessage.SCHEMA_VERSION) {
+					|| telemetry.schemaVersion() != TelemetryMessageDto.SCHEMA_VERSION) {
 				reason = "unsupported schemaVersion " + telemetry.schemaVersion();
 			} else {
 				return telemetry;

@@ -12,9 +12,9 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 import com.otonomc3.core.config.TelemetryProperties;
-import com.otonomc3.core.telemetry.dto.TelemetryMessage;
+import com.otonomc3.core.telemetry.dto.TelemetryMessageDto;
 import com.otonomc3.core.telemetry.persistence.TelemetryKey;
-import com.otonomc3.core.telemetry.persistence.TelemetryRecord;
+import com.otonomc3.core.telemetry.persistence.TelemetryEntity;
 import com.otonomc3.core.telemetry.persistence.TelemetryRepository;
 import lombok.extern.slf4j.Slf4j;
 import org.locationtech.jts.geom.Coordinate;
@@ -57,15 +57,15 @@ public class TelemetryService {
 	 * @param receivedAt when the batch was received; used for the late flag
 	 */
 	@Transactional
-	public void process(List<TelemetryMessage> messages, Instant receivedAt) {
-		List<TelemetryMessage> valid = messages.stream().filter(this::isValid).toList();
+	public void process(List<TelemetryMessageDto> messages, Instant receivedAt) {
+		List<TelemetryMessageDto> valid = messages.stream().filter(this::isValid).toList();
 
 		// Sorted by seq so that reordering inside one batch is not reported as a gap.
-		valid.stream().sorted(Comparator.comparing(TelemetryMessage::seq)).forEach(this::trackSeq);
+		valid.stream().sorted(Comparator.comparing(TelemetryMessageDto::seq)).forEach(this::trackSeq);
 
 		// 1. Duplicates inside the batch: keep the first copy.
-		Map<TelemetryKey, TelemetryMessage> unique = new LinkedHashMap<>();
-		for (TelemetryMessage message : valid) {
+		Map<TelemetryKey, TelemetryMessageDto> unique = new LinkedHashMap<>();
+		for (TelemetryMessageDto message : valid) {
 			unique.putIfAbsent(keyOf(message), message);
 		}
 		int duplicates = valid.size() - unique.size();
@@ -74,8 +74,8 @@ public class TelemetryService {
 		Set<TelemetryKey> existing = unique.isEmpty() ? Set.of() : repository.findExistingKeys(unique.keySet());
 		duplicates += existing.size();
 
-		List<TelemetryRecord> records = new ArrayList<>(unique.size());
-		for (Map.Entry<TelemetryKey, TelemetryMessage> entry : unique.entrySet()) {
+		List<TelemetryEntity> records = new ArrayList<>(unique.size());
+		for (Map.Entry<TelemetryKey, TelemetryMessageDto> entry : unique.entrySet()) {
 			if (!existing.contains(entry.getKey())) {
 				records.add(toRecord(entry.getValue(), receivedAt));
 			}
@@ -87,10 +87,10 @@ public class TelemetryService {
 
 		stats.addSaved(records.size());
 		stats.addDuplicates(duplicates);
-		stats.addLate(records.stream().filter(TelemetryRecord::isLate).count());
+		stats.addLate(records.stream().filter(TelemetryEntity::isLate).count());
 	}
 
-	private boolean isValid(TelemetryMessage message) {
+	private boolean isValid(TelemetryMessageDto message) {
 		if (message.droneId() == null || message.droneId() <= 0
 				|| message.sessionId() == null
 				|| message.timestamp() == null
@@ -108,7 +108,7 @@ public class TelemetryService {
 	 *
 	 * @return the number of missing messages before this one, 0 when there is no gap
 	 */
-	long trackSeq(TelemetryMessage message) {
+	long trackSeq(TelemetryMessageDto message) {
 		SessionKey key = new SessionKey(message.droneId(), message.sessionId());
 		long seq = message.seq();
 		Long last = lastSeq.get(key);
@@ -126,16 +126,16 @@ public class TelemetryService {
 		return missing;
 	}
 
-	boolean isLate(TelemetryMessage message, Instant receivedAt) {
+	boolean isLate(TelemetryMessageDto message, Instant receivedAt) {
 		return Duration.between(message.timestamp(), receivedAt).compareTo(lateThreshold) > 0;
 	}
 
-	private static TelemetryKey keyOf(TelemetryMessage message) {
+	private static TelemetryKey keyOf(TelemetryMessageDto message) {
 		return new TelemetryKey(message.droneId(), message.sessionId(), message.seq());
 	}
 
-	private TelemetryRecord toRecord(TelemetryMessage message, Instant receivedAt) {
-		TelemetryRecord record = new TelemetryRecord();
+	private TelemetryEntity toRecord(TelemetryMessageDto message, Instant receivedAt) {
+		TelemetryEntity record = new TelemetryEntity();
 		record.setDroneId(message.droneId());
 		record.setSessionId(message.sessionId());
 		record.setSeq(message.seq());
@@ -143,30 +143,30 @@ public class TelemetryService {
 		record.setReceivedAt(receivedAt);
 		record.setLate(isLate(message, receivedAt));
 
-		TelemetryMessage.Position position = message.position();
+		TelemetryMessageDto.Position position = message.position();
 		if (position != null) {
 			record.setPosition(toPoint(position.lat(), position.lon()));
 			record.setAltMsl(position.altMsl());
 			record.setAltRel(position.altRel());
 			record.setHeading(position.heading());
 		}
-		TelemetryMessage.Velocity velocity = message.velocity();
+		TelemetryMessageDto.Velocity velocity = message.velocity();
 		if (velocity != null) {
 			record.setGroundSpeed(velocity.groundSpeed());
 			record.setAirSpeed(velocity.airSpeed());
 			record.setClimbRate(velocity.climbRate());
 		}
-		TelemetryMessage.Battery battery = message.battery();
+		TelemetryMessageDto.Battery battery = message.battery();
 		if (battery != null) {
 			record.setBatteryPercent(battery.percent());
 			record.setBatteryVoltage(battery.voltage());
 		}
-		TelemetryMessage.Gps gps = message.gps();
+		TelemetryMessageDto.Gps gps = message.gps();
 		if (gps != null) {
 			record.setGpsFixType(gps.fixType());
 			record.setGpsSatellites(gps.satellites());
 		}
-		TelemetryMessage.Status status = message.status();
+		TelemetryMessageDto.Status status = message.status();
 		if (status != null) {
 			record.setMode(status.mode());
 			record.setArmed(status.armed());
