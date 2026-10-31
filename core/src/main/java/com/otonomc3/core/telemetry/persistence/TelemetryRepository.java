@@ -1,5 +1,6 @@
 package com.otonomc3.core.telemetry.persistence;
 
+import java.time.Instant;
 import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
@@ -7,6 +8,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
+import org.springframework.data.domain.Limit;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -46,5 +48,12 @@ public interface TelemetryRepository extends JpaRepository<TelemetryEntity, Long
 			  ON t.drone_id = k.drone_id AND t.session_id = k.session_id AND t.seq = k.seq
 			""", nativeQuery = true)
 	List<Object[]> findExistingKeyRows(@Param("keysJson") String keysJson);
+
+	/**
+	 * Rows of one drone with from <= ts <= to, oldest first, at most {@code limit}.
+	 * The filter and the ordering both use the (drone_id, ts) index.
+	 */
+	List<TelemetryEntity> findByDroneIdAndTimestampBetweenOrderByTimestampAsc(Integer droneId, Instant from,
+			Instant to, Limit limit);
 
 }

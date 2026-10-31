@@ -1,0 +1,175 @@
+:root {
+	--online: #1f9d55;
+	--stale: #8a9099;
+	--lost: #d64532;
+	--panel-bg: rgba(255, 255, 255, 0.95);
+	--text: #1f2328;
+	--muted: #59636e;
+}
+
+html,
+body,
+#map {
+	height: 100%;
+	margin: 0;
+}
+
+body {
+	font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+	color: var(--text);
+}
+
+/* --- Drone marker ------------------------------------------------------------ */
+
+/* Replaces Leaflet's default white box around divIcons. */
+.drone-marker {
+	background: none;
+	border: none;
+}
+
+.drone-icon {
+	position: relative;
+	width: 32px;
+	height: 32px;
+	cursor: pointer;
+}
+
+.drone-plane {
+	display: block;
+	transform-origin: 50% 50%;
+}
+
+.drone-plane path {
+	stroke: #fff;
+	stroke-width: 1;
+	stroke-linejoin: round;
+}
+
+.drone-icon.status-online .drone-plane path { fill: var(--online); }
+.drone-icon.status-stale .drone-plane path { fill: var(--stale); }
+.drone-icon.status-lost .drone-plane path { fill: var(--lost); }
+
+.drone-label {
+	position: absolute;
+	left: 34px;
+	top: 7px;
+	padding: 1px 5px;
+	border-radius: 3px;
+	background: rgba(255, 255, 255, 0.85);
+	font-size: 12px;
+	font-weight: 600;
+	white-space: nowrap;
+	pointer-events: none;
+}
+
+/* --- Popup ------------------------------------------------------------------- */
+
+.drone-popup h3 {
+	margin: 0 0 6px;
+	font-size: 14px;
+}
+
+.drone-popup table {
+	border-collapse: collapse;
+	font-size: 12px;
+}
+
+.drone-popup th {
+	padding: 1px 10px 1px 0;
+	color: var(--muted);
+	font-weight: normal;
+	text-align: left;
+	white-space: nowrap;
+}
+
+.drone-popup td {
+	padding: 1px 0;
+	font-variant-numeric: tabular-nums;
+}
+
+/* --- Panel ------------------------------------------------------------------- */
+
+.drone-panel {
+	min-width: 190px;
+	max-height: 60vh;
+	overflow-y: auto;
+	padding: 8px 10px;
+	border-radius: 6px;
+	background: var(--panel-bg);
+	box-shadow: 0 1px 5px rgba(0, 0, 0, 0.3);
+	font-size: 13px;
+}
+
+.connection {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding-bottom: 6px;
+	margin-bottom: 6px;
+	border-bottom: 1px solid #e3e6ea;
+	font-size: 12px;
+}
+
+.connection .dot,
+.drone-list .dot {
+	flex: none;
+	width: 9px;
+	height: 9px;
+	border-radius: 50%;
+	background: var(--stale);
+}
+
+.connection.connected .dot { background: var(--online); }
+.connection.disconnected .dot { background: var(--lost); }
+
+.drone-panel h2 {
+	margin: 0 0 4px;
+	font-size: 13px;
+}
+
+.drone-list {
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.drone-list li {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 3px 4px;
+	border-radius: 4px;
+	cursor: pointer;
+}
+
+.drone-list li:hover {
+	background: #eef1f4;
+}
+
+.drone-list li.no-position {
+	cursor: default;
+	opacity: 0.6;
+}
+
+.drone-list .name {
+	font-weight: 600;
+}
+
+.drone-list .link {
+	margin-left: auto;
+	color: var(--muted);
+	font-size: 12px;
+}
+
+.drone-list li.status-online .dot { background: var(--online); }
+.drone-list li.status-stale .dot { background: var(--stale); }
+.drone-list li.status-lost .dot { background: var(--lost); }
+
+.drone-list .empty {
+	color: var(--muted);
+	cursor: default;
+}
+
+.drone-list .empty:hover {
+	background: none;
+}

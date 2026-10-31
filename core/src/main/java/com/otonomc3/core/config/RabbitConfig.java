@@ -14,13 +14,13 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 /**
- * RabbitMQ topology and listener settings of the telemetry consumer.
+ * RabbitMQ topology and listener settings of the telemetry and live state consumers.
  *
  * <p>The declarables below are declared by Spring's RabbitAdmin as soon as the
  * listener opens its connection at startup.
  */
 @Configuration
-@EnableConfigurationProperties(TelemetryProperties.class)
+@EnableConfigurationProperties({ TelemetryProperties.class, LiveProperties.class })
 public class RabbitConfig {
 
 	/** Also declared by the edge adapter (publisher.py); both declarations must be identical. */
@@ -34,6 +34,11 @@ public class RabbitConfig {
 	public static final String TELEMETRY_DLQ_ROUTING_KEY = TELEMETRY_DLQ;
 
 	public static final String TELEMETRY_CONTAINER_FACTORY = "telemetryContainerFactory";
+
+	/** Second copy of the telemetry stream, for the live drone state only. */
+	public static final String LIVE_QUEUE = "core.live";
+	public static final String LIVE_CONTAINER_FACTORY = "liveContainerFactory";
+	private static final int LIVE_PREFETCH = 100;
 
 	@Bean
 	TopicExchange telemetryExchange() {
@@ -52,6 +57,27 @@ public class RabbitConfig {
 	@Bean
 	Binding telemetryBinding(Queue telemetryQueue, TopicExchange telemetryExchange) {
 		return BindingBuilder.bind(telemetryQueue).to(telemetryExchange).with(TELEMETRY_ROUTING_PATTERN);
+	}
+
+	/**
+	 * Only the newest data matters for the live view, so old messages expire and
+	 * when the queue is full the oldest are dropped. Expired or dropped messages
+	 * are discarded, not dead-lettered.
+	 */
+	@Bean
+	Queue liveQueue(LiveProperties properties) {
+		// Durable because RabbitMQ 4 no longer allows non-durable, non-exclusive
+		// queues (the transient_nonexcl_queues feature is deprecated).
+		return QueueBuilder.durable(LIVE_QUEUE)
+				.ttl(Math.toIntExact(properties.queueTtl().toMillis()))
+				.maxLength(properties.queueMaxLength())
+				.overflow(QueueBuilder.Overflow.dropHead)
+				.build();
+	}
+
+	@Bean
+	Binding liveBinding(Queue liveQueue, TopicExchange telemetryExchange) {
+		return BindingBuilder.bind(liveQueue).to(telemetryExchange).with(TELEMETRY_ROUTING_PATTERN);
 	}
 
 	@Bean
@@ -90,6 +116,25 @@ public class RabbitConfig {
 		factory.setBatchSize(properties.batchSize());
 		factory.setContainerCustomizer(
 				container -> container.setBatchReceiveTimeout(properties.batchTimeout().toMillis()));
+		return factory;
+	}
+
+	/**
+	 * Single-message listener for the live queue. AUTO ack (rather than NONE) so
+	 * that the prefetch limit applies; a message whose listener throws is dropped,
+	 * not requeued, because a newer one will follow shortly.
+	 */
+	@Bean(LIVE_CONTAINER_FACTORY)
+	SimpleRabbitListenerContainerFactory liveContainerFactory(ConnectionFactory connectionFactory) {
+		SimpleRabbitListenerContainerFactory factory = new SimpleRabbitListenerContainerFactory();
+		factory.setConnectionFactory(connectionFactory);
+		factory.setAcknowledgeMode(AcknowledgeMode.AUTO);
+		factory.setDefaultRequeueRejected(false);
+		factory.setPrefetchCount(LIVE_PREFETCH);
+		// One consumer keeps messages in queue order.
+		factory.setConcurrentConsumers(1);
+		factory.setMaxConcurrentConsumers(1);
+		factory.setBatchListener(false);
 		return factory;
 	}
 
