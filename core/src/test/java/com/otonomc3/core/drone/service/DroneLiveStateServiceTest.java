@@ -27,7 +27,7 @@ class DroneLiveStateServiceTest {
 	void setUp() {
 		clock = new StepClock(T0);
 		LiveProperties properties = new LiveProperties(Duration.ofSeconds(3), Duration.ofSeconds(10),
-				Duration.ofSeconds(5), 1000);
+				Duration.ofSeconds(5), 1000, Duration.ofSeconds(2), Duration.ofSeconds(2));
 		service = new DroneLiveStateService(clock, properties);
 	}
 
@@ -115,6 +115,69 @@ class DroneLiveStateServiceTest {
 		assertThat(service.update(new TelemetryMessageDto(2, null, 1, 1L, T0, null, null, null, null, null)))
 				.isFalse();
 		assertThat(service.find(1)).isEmpty();
+	}
+
+	// --- late and future messages --------------------------------------------------
+
+	@Test
+	void messageOlderThanMaxAgeIsNotApplied() {
+		clock.set(T0.plusMillis(2001));
+
+		assertThat(service.update(message(1, SESSION, 1, T0))).isFalse();
+
+		assertThat(service.find(1)).isEmpty();
+		assertThat(service.rejectedLateCount()).isEqualTo(1);
+	}
+
+	@Test
+	void messageExactlyAtMaxAgeIsApplied() {
+		clock.set(T0.plusSeconds(2));
+
+		assertThat(service.update(message(1, SESSION, 1, T0))).isTrue();
+		assertThat(service.rejectedLateCount()).isZero();
+	}
+
+	@Test
+	void replayedBufferAfterOutageDoesNotRefreshLiveState() {
+		service.update(message(1, SESSION, 1, T0));
+		clock.set(T0.plusSeconds(20));
+
+		// The adapter flushes what it buffered during the outage.
+		for (int seq = 2; seq <= 10; seq++) {
+			assertThat(service.update(message(1, SESSION, seq, T0.plusSeconds(seq)))).isFalse();
+		}
+
+		DroneLiveState state = service.find(1).orElseThrow();
+		assertThat(state.message().seq()).isEqualTo(1);
+		assertThat(state.lastSeenAt()).isEqualTo(T0);
+		assertThat(state.linkStatus()).isEqualTo(LinkStatus.LOST);
+		assertThat(service.rejectedLateCount()).isEqualTo(9);
+
+		// The first fresh message brings the drone back.
+		assertThat(service.update(message(1, SESSION, 11, T0.plusSeconds(20)))).isTrue();
+		assertThat(status(1)).isEqualTo(LinkStatus.ONLINE);
+	}
+
+	@Test
+	void futureMessageIsAppliedButCountedAsClockSkew() {
+		assertThat(service.update(message(1, SESSION, 1, T0.plusSeconds(2)))).isTrue();
+		assertThat(service.futureMessageCount()).isZero();
+
+		assertThat(service.update(message(1, SESSION, 2, T0.plusMillis(2001)))).isTrue();
+		assertThat(service.futureMessageCount()).isEqualTo(1);
+		assertThat(service.find(1).orElseThrow().message().seq()).isEqualTo(2);
+	}
+
+	@Test
+	void summaryResetsCounters() {
+		clock.set(T0.plusSeconds(10));
+		service.update(message(1, SESSION, 1, T0));
+		service.update(message(2, SESSION, 1, T0.plusSeconds(20)));
+
+		service.logRejectionSummary();
+
+		assertThat(service.rejectedLateCount()).isZero();
+		assertThat(service.futureMessageCount()).isZero();
 	}
 
 	// --- reading -------------------------------------------------------------------

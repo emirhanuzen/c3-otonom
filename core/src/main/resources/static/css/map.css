@@ -2,6 +2,9 @@
 	--online: #1f9d55;
 	--stale: #8a9099;
 	--lost: #d64532;
+	--critical: #d1242f;
+	--critical-bg: #fde4e4;
+	--warning: #e67700;
 	--panel-bg: rgba(255, 255, 255, 0.95);
 	--text: #1f2328;
 	--muted: #59636e;
@@ -73,6 +76,17 @@ body {
 
 .drone-icon.status-lost .drone-lost {
 	display: block;
+}
+
+/* Red ring around a drone that has an active CRITICAL alarm. */
+.drone-icon.has-critical::before {
+	content: "";
+	position: absolute;
+	inset: -6px;
+	border: 3px solid var(--critical);
+	border-radius: 50%;
+	box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.85), 0 0 8px rgba(209, 36, 47, 0.6);
+	pointer-events: none;
 }
 
 .drone-label {
@@ -296,4 +310,162 @@ body {
 
 .trail-clear:hover {
 	background: #eef1f4;
+}
+
+/* --- Alarm panel ----------------------------------------------------------------- */
+
+.alarm-panel {
+	display: flex;
+	flex-direction: column;
+	width: 300px;
+	max-width: calc(100vw - 32px);
+	max-height: 40vh;
+	border-radius: 6px;
+	background: var(--panel-bg);
+	box-shadow: 0 1px 5px rgba(0, 0, 0, 0.3);
+	font-size: 13px;
+}
+
+.alarm-header {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 6px 8px 6px 10px;
+}
+
+.alarm-header h2 {
+	flex: 1;
+	margin: 0;
+	font-size: 13px;
+}
+
+.alarm-count {
+	min-width: 18px;
+	padding: 0 5px;
+	border-radius: 9px;
+	background: var(--stale);
+	color: #fff;
+	font-size: 11px;
+	font-weight: 600;
+	line-height: 18px;
+	text-align: center;
+}
+
+.alarm-count.has-warning { background: var(--warning); }
+.alarm-count.has-critical { background: var(--critical); }
+
+.alarm-toggle {
+	width: 24px;
+	height: 22px;
+	padding: 0;
+	border: 1px solid #c9ced4;
+	border-radius: 4px;
+	background: #fff;
+	font: inherit;
+	font-weight: 600;
+	line-height: 1;
+	cursor: pointer;
+}
+
+.alarm-toggle:hover {
+	background: #eef1f4;
+}
+
+.alarm-list {
+	overflow-y: auto;
+	margin: 0;
+	padding: 0 6px 6px;
+	border-top: 1px solid #e3e6ea;
+	list-style: none;
+}
+
+.alarm-panel.collapsed .alarm-list {
+	display: none;
+}
+
+.alarm-list .empty {
+	padding: 6px 4px 0;
+	color: var(--muted);
+}
+
+.alarm-item {
+	display: grid;
+	grid-template-columns: 1fr auto;
+	align-items: center;
+	gap: 2px 8px;
+	margin-top: 6px;
+	padding: 5px 6px 5px 8px;
+	border-left: 4px solid var(--stale);
+	border-radius: 4px;
+	background: #fff;
+	box-shadow: 0 0 0 1px #e3e6ea inset;
+}
+
+.alarm-item.severity-critical { border-left-color: var(--critical); }
+.alarm-item.severity-warning { border-left-color: var(--warning); }
+
+/* Unacknowledged CRITICAL alarms blink until an operator acknowledges them. */
+.alarm-item.blink {
+	animation: alarm-blink 1s steps(1, end) infinite;
+}
+
+@keyframes alarm-blink {
+	50% { background: var(--critical-bg); }
+}
+
+.alarm-title {
+	font-weight: 600;
+	cursor: pointer;
+}
+
+.alarm-title:hover {
+	text-decoration: underline;
+}
+
+.alarm-severity {
+	padding: 0 6px;
+	border-radius: 3px;
+	color: #fff;
+	font-size: 11px;
+	font-weight: 600;
+	line-height: 17px;
+}
+
+.severity-critical .alarm-severity { background: var(--critical); }
+.severity-warning .alarm-severity { background: var(--warning); }
+
+.alarm-message {
+	grid-column: 1 / -1;
+	color: var(--muted);
+	font-size: 12px;
+}
+
+.alarm-duration {
+	color: var(--muted);
+	font-size: 12px;
+	font-variant-numeric: tabular-nums;
+}
+
+.alarm-ack {
+	padding: 2px 8px;
+	border: 1px solid #c9ced4;
+	border-radius: 4px;
+	background: #fff;
+	font: inherit;
+	font-size: 12px;
+	cursor: pointer;
+}
+
+.alarm-ack:hover:not(:disabled) {
+	background: #eef1f4;
+}
+
+.alarm-ack:disabled {
+	cursor: default;
+	opacity: 0.6;
+}
+
+.alarm-acked {
+	color: var(--muted);
+	font-size: 12px;
 }

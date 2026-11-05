@@ -1,5 +1,7 @@
 package com.otonomc3.core.api;
 
+import com.otonomc3.core.alarm.service.AlarmNotFoundException;
+import com.otonomc3.core.alarm.service.InvalidAlarmQueryException;
 import com.otonomc3.core.drone.service.DroneNotFoundException;
 import com.otonomc3.core.telemetry.service.InvalidTelemetryQueryException;
 import org.springframework.http.HttpStatus;
@@ -27,6 +29,21 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
 
 	@ExceptionHandler(InvalidTelemetryQueryException.class)
 	ProblemDetail handleInvalidQuery(InvalidTelemetryQueryException e) {
+		ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, e.getMessage());
+		problem.setTitle("Invalid query");
+		return problem;
+	}
+
+	@ExceptionHandler(AlarmNotFoundException.class)
+	ProblemDetail handleAlarmNotFound(AlarmNotFoundException e) {
+		ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, e.getMessage());
+		problem.setTitle("Alarm not found");
+		problem.setProperty("alarmId", e.getAlarmId());
+		return problem;
+	}
+
+	@ExceptionHandler(InvalidAlarmQueryException.class)
+	ProblemDetail handleInvalidAlarmQuery(InvalidAlarmQueryException e) {
 		ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, e.getMessage());
 		problem.setTitle("Invalid query");
 		return problem;

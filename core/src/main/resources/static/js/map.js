@@ -4,6 +4,9 @@
  * Live drone map. Draws the current state from GET /api/drones, then follows
  * the /topic/drones broadcasts over STOMP (/ws). Each broadcast carries the
  * full state of every drone, including its link status.
+ *
+ * The alarm panel loads the active alarms from GET /api/alarms and then follows
+ * the change events on /topic/alarms.
  */
 (() => {
 	const CENTER = [38.6069, 39.2914]; // Elazığ Airport
@@ -41,6 +44,23 @@
 		LOST: 'Bağlantı kayıp',
 	};
 
+	// --- Alarm settings ------------------------------------------------------------
+
+	const ALARM_TYPE_LABELS = {
+		LINK: 'Bağlantı',
+		LOW_BATTERY: 'Düşük batarya',
+		GPS_DEGRADED: 'GPS zayıf',
+		LOW_ALTITUDE: 'Düşük irtifa',
+	};
+	const ALARM_SEVERITY_LABELS = {
+		CRITICAL: 'Kritik',
+		WARNING: 'Uyarı',
+	};
+	/** The API's maximum; there are normally far fewer active alarms. */
+	const ALARM_FETCH_LIMIT = 500;
+	const ALARM_DURATION_REFRESH_MS = 1000;
+	const ALARM_PANEL_COLLAPSED_KEY = 'otonom.alarmPanel.collapsed';
+
 	// Airplane pointing north, so rotating by heading turns it clockwise from north.
 	const PLANE_PATH = 'M12 1.5 L13.6 8.5 L22 13 L22 15.2 L13.6 12.6 L13.1 18.3 L16 20.4 L16 22 '
 		+ 'L12 20.9 L8 22 L8 20.4 L10.9 18.3 L10.4 12.6 L2 15.2 L2 13 L10.4 8.5 Z';
@@ -64,6 +84,15 @@
 	 */
 	const trailLayer = L.layerGroup().addTo(map);
 	let trailDurationMs = DEFAULT_TRAIL_DURATION_MS;
+
+	/** alarmId -> alarm (AlarmDto); active alarms only. */
+	const alarms = new Map();
+	/**
+	 * Ids of alarms known to be cleared. An event sent concurrently with the
+	 * clearing (for example an acknowledgement) may arrive after it and must not
+	 * bring the alarm back.
+	 */
+	const clearedAlarmIds = new Set();
 
 	// --- Panel -------------------------------------------------------------------
 
@@ -209,7 +238,8 @@
 		const element = marker.getElement();
 		if (element) {
 			const status = state.linkStatus.toLowerCase();
-			element.querySelector('.drone-icon').className = `drone-icon status-${status}`;
+			const ring = hasCriticalAlarm(state.droneId) ? ' has-critical' : '';
+			element.querySelector('.drone-icon').className = `drone-icon status-${status}${ring}`;
 			const heading = state.position?.heading;
 			element.querySelector('.drone-plane').style.transform = heading == null ? '' : `rotate(${heading}deg)`;
 		}
@@ -233,6 +263,206 @@
 			.map(([name, value]) => `<tr><th>${name}</th><td>${escapeHtml(value ?? '—')}</td></tr>`)
 			.join('');
 		return `<div class="drone-popup"><h3>${label(state.droneId)}</h3><table>${body}</table></div>`;
+	}
+
+	// --- Alarms ------------------------------------------------------------------
+
+	const alarmPanel = L.control({ position: 'bottomright' });
+	let alarmPanelEl;
+	let alarmListEl;
+	let alarmCountEl;
+	let alarmToggleEl;
+	/** Events received while the alarm list is loading; applied after it so none is lost. */
+	let pendingAlarmEvents = null;
+	let alarmLoadId = 0;
+
+	alarmPanel.onAdd = () => {
+		alarmPanelEl = L.DomUtil.create('div', 'alarm-panel');
+		alarmPanelEl.innerHTML = `
+			<div class="alarm-header">
+				<h2>Alarmlar</h2>
+				<span class="alarm-count" hidden></span>
+				<button type="button" class="alarm-toggle" aria-expanded="true"></button>
+			</div>
+			<ul class="alarm-list"><li class="empty">Aktif alarm yok</li></ul>`;
+		L.DomEvent.disableClickPropagation(alarmPanelEl);
+		L.DomEvent.disableScrollPropagation(alarmPanelEl);
+		alarmListEl = alarmPanelEl.querySelector('.alarm-list');
+		alarmCountEl = alarmPanelEl.querySelector('.alarm-count');
+		alarmToggleEl = alarmPanelEl.querySelector('.alarm-toggle');
+		alarmToggleEl.addEventListener('click', () => {
+			setAlarmPanelCollapsed(!alarmPanelEl.classList.contains('collapsed'));
+		});
+		setAlarmPanelCollapsed(readAlarmPanelCollapsed());
+		return alarmPanelEl;
+	};
+	alarmPanel.addTo(map);
+
+	function setAlarmPanelCollapsed(collapsed) {
+		alarmPanelEl.classList.toggle('collapsed', collapsed);
+		alarmToggleEl.textContent = collapsed ? '+' : '−';
+		alarmToggleEl.title = collapsed ? 'Genişlet' : 'Küçült';
+		alarmToggleEl.setAttribute('aria-expanded', String(!collapsed));
+		try {
+			localStorage.setItem(ALARM_PANEL_COLLAPSED_KEY, collapsed ? '1' : '0');
+		} catch {
+			// Storage may be unavailable (private mode, blocked site data); the panel works without it.
+		}
+	}
+
+	function readAlarmPanelCollapsed() {
+		try {
+			return localStorage.getItem(ALARM_PANEL_COLLAPSED_KEY) === '1';
+		} catch {
+			return false;
+		}
+	}
+
+	/**
+	 * Replaces the alarm list with the server's active alarms. Events arriving in
+	 * the meantime are buffered and applied afterwards. When loads overlap (start-up
+	 * and STOMP (re)connect) only the newest one counts.
+	 */
+	function loadAlarms() {
+		const loadId = ++alarmLoadId;
+		pendingAlarmEvents ??= [];
+		fetch(`/api/alarms?active=true&limit=${ALARM_FETCH_LIMIT}`)
+			.then((response) => {
+				if (!response.ok) {
+					throw new Error(`HTTP ${response.status}`);
+				}
+				return response.json();
+			})
+			.then((list) => {
+				if (loadId !== alarmLoadId) {
+					return;
+				}
+				alarms.clear();
+				list.filter((alarm) => !clearedAlarmIds.has(alarm.id)).forEach((alarm) => alarms.set(alarm.id, alarm));
+			})
+			.catch((error) => console.error('Alarmlar alınamadı:', error))
+			.finally(() => {
+				if (loadId !== alarmLoadId) {
+					return;
+				}
+				const events = pendingAlarmEvents;
+				pendingAlarmEvents = null;
+				events.forEach((event) => storeAlarm(event.alarm));
+				alarmsChanged();
+			});
+	}
+
+	function handleAlarmEvent(event) {
+		if (pendingAlarmEvents) {
+			pendingAlarmEvents.push(event);
+			return;
+		}
+		storeAlarm(event.alarm);
+		alarmsChanged();
+	}
+
+	function storeAlarm(alarm) {
+		if (!alarm.active) {
+			clearedAlarmIds.add(alarm.id);
+			alarms.delete(alarm.id);
+		} else if (!clearedAlarmIds.has(alarm.id)) {
+			alarms.set(alarm.id, alarm);
+		}
+	}
+
+	function alarmsChanged() {
+		renderAlarms();
+		drones.forEach((entry) => {
+			if (entry.marker) {
+				updateMarker(entry);
+			}
+		});
+	}
+
+	function hasCriticalAlarm(droneId) {
+		for (const alarm of alarms.values()) {
+			if (alarm.droneId === droneId && alarm.severity === 'CRITICAL') {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** CRITICAL first, then newest first. */
+	function compareAlarms(a, b) {
+		const severity = (b.severity === 'CRITICAL') - (a.severity === 'CRITICAL');
+		return severity || Date.parse(b.raisedAt) - Date.parse(a.raisedAt) || b.id - a.id;
+	}
+
+	function renderAlarms() {
+		const sorted = [...alarms.values()].sort(compareAlarms);
+		if (sorted.length === 0) {
+			alarmListEl.innerHTML = '<li class="empty">Aktif alarm yok</li>';
+		} else {
+			alarmListEl.replaceChildren(...sorted.map(createAlarmItem));
+		}
+
+		alarmCountEl.hidden = sorted.length === 0;
+		alarmCountEl.textContent = sorted.length;
+		const hasCritical = sorted.some((alarm) => alarm.severity === 'CRITICAL');
+		alarmCountEl.classList.toggle('has-critical', hasCritical);
+		alarmCountEl.classList.toggle('has-warning', !hasCritical && sorted.length > 0);
+	}
+
+	function createAlarmItem(alarm) {
+		const item = document.createElement('li');
+		item.className = `alarm-item severity-${alarm.severity.toLowerCase()}`;
+		item.classList.toggle('blink', alarm.severity === 'CRITICAL' && !alarm.acknowledged);
+		item.dataset.raisedAt = alarm.raisedAt;
+		item.innerHTML = '<span class="alarm-title" title="İHA\'ya git"></span><span class="alarm-severity"></span>'
+			+ '<span class="alarm-message"></span><span class="alarm-duration"></span><span class="alarm-action"></span>';
+
+		const title = item.querySelector('.alarm-title');
+		title.textContent = `${label(alarm.droneId)} · ${ALARM_TYPE_LABELS[alarm.type] ?? alarm.type}`;
+		title.addEventListener('click', () => focusDrone(alarm.droneId));
+		item.querySelector('.alarm-severity').textContent = ALARM_SEVERITY_LABELS[alarm.severity] ?? alarm.severity;
+		item.querySelector('.alarm-message').textContent = alarm.message;
+		updateAlarmDuration(item);
+
+		const action = item.querySelector('.alarm-action');
+		if (alarm.acknowledged) {
+			action.innerHTML = '<span class="alarm-acked">Onaylandı</span>';
+		} else {
+			const button = document.createElement('button');
+			button.type = 'button';
+			button.className = 'alarm-ack';
+			button.textContent = 'Onayla';
+			button.addEventListener('click', () => acknowledgeAlarm(alarm.id, button));
+			action.append(button);
+		}
+		return item;
+	}
+
+	function updateAlarmDuration(item) {
+		const elapsedMs = Math.max(0, Date.now() - Date.parse(item.dataset.raisedAt));
+		item.querySelector('.alarm-duration').textContent = formatDuration(elapsedMs);
+	}
+
+	function updateAlarmDurations() {
+		alarmListEl.querySelectorAll('.alarm-item').forEach(updateAlarmDuration);
+	}
+
+	function acknowledgeAlarm(alarmId, button) {
+		button.disabled = true;
+		fetch(`/api/alarms/${alarmId}/ack`, { method: 'POST' })
+			.then((response) => {
+				if (!response.ok) {
+					throw new Error(`HTTP ${response.status}`);
+				}
+				return response.json();
+			})
+			// The ACKNOWLEDGED event carries the same change; applying the response
+			// right away keeps the panel correct even if the event is missed.
+			.then((alarm) => handleAlarmEvent({ event: 'ACKNOWLEDGED', alarm }))
+			.catch((error) => {
+				console.error('Alarm onaylanamadı:', error);
+				button.disabled = false;
+			});
 	}
 
 	// --- Trails ------------------------------------------------------------------
@@ -339,6 +569,22 @@
 		});
 	}
 
+	/** For example "45 sn", "3 dk 05 sn", "1 sa 02 dk". */
+	function formatDuration(ms) {
+		const totalSeconds = Math.floor(ms / 1000);
+		const hours = Math.floor(totalSeconds / 3600);
+		const minutes = Math.floor((totalSeconds % 3600) / 60);
+		const seconds = totalSeconds % 60;
+		const pad = (n) => String(n).padStart(2, '0');
+		if (hours > 0) {
+			return `${hours} sa ${pad(minutes)} dk`;
+		}
+		if (minutes > 0) {
+			return `${minutes} dk ${pad(seconds)} sn`;
+		}
+		return `${seconds} sn`;
+	}
+
 	function withUnit(value, unit) {
 		return value == null ? null : `${value} ${unit}`;
 	}
@@ -352,6 +598,8 @@
 	// --- Data --------------------------------------------------------------------
 
 	setInterval(pruneAllTrails, TRAIL_PRUNE_INTERVAL_MS);
+	setInterval(updateAlarmDurations, ALARM_DURATION_REFRESH_MS);
+	loadAlarms();
 
 	fetch('/api/drones')
 		.then((response) => {
@@ -370,6 +618,9 @@
 		onConnect: () => {
 			setConnection('connected');
 			client.subscribe('/topic/drones', (message) => JSON.parse(message.body).forEach(update));
+			client.subscribe('/topic/alarms', (message) => handleAlarmEvent(JSON.parse(message.body)));
+			// Events sent while disconnected were missed, so the list is reloaded on every (re)connect.
+			loadAlarms();
 		},
 		onWebSocketClose: () => setConnection('disconnected'),
 		onStompError: (frame) => {
