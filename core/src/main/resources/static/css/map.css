@@ -39,15 +39,41 @@ body {
 	transform-origin: 50% 50%;
 }
 
+/* The fill is the drone's own color (--drone-color, set per marker), same as its trail. */
 .drone-plane path {
+	fill: var(--drone-color, var(--stale));
 	stroke: #fff;
 	stroke-width: 1;
 	stroke-linejoin: round;
 }
 
-.drone-icon.status-online .drone-plane path { fill: var(--online); }
-.drone-icon.status-stale .drone-plane path { fill: var(--stale); }
-.drone-icon.status-lost .drone-plane path { fill: var(--lost); }
+/* Link status: ONLINE as is, STALE faded, LOST faded with a red cross on top. */
+.drone-icon.status-stale .drone-plane,
+.drone-icon.status-lost .drone-plane {
+	opacity: 0.45;
+}
+
+.drone-lost {
+	display: none;
+	position: absolute;
+	left: 9px;
+	top: 9px;
+	pointer-events: none;
+}
+
+.drone-lost path {
+	fill: none;
+	stroke: var(--lost);
+	stroke-width: 2.5;
+	stroke-linecap: round;
+	/* White outline so the cross stays visible on any map background. */
+	paint-order: stroke;
+	filter: drop-shadow(0 0 1px #fff) drop-shadow(0 0 1px #fff);
+}
+
+.drone-icon.status-lost .drone-lost {
+	display: block;
+}
 
 .drone-label {
 	position: absolute;
@@ -172,4 +198,102 @@ body {
 
 .drone-list .empty:hover {
 	background: none;
+}
+
+/* Trail color of the drone, next to its name. */
+.drone-list .swatch {
+	flex: none;
+	width: 14px;
+	height: 4px;
+	border-radius: 2px;
+}
+
+/* --- Trail controls ------------------------------------------------------------ */
+
+.trail-controls {
+	margin-top: 8px;
+	padding-top: 6px;
+	border-top: 1px solid #e3e6ea;
+}
+
+.control-row {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	margin: 4px 0;
+	font-size: 12px;
+	cursor: pointer;
+}
+
+.control-row select {
+	font: inherit;
+	padding: 1px 4px;
+}
+
+/* On/off switch: the checkbox stays in place for keyboard and screen readers, but is invisible. */
+.switch {
+	position: relative;
+}
+
+.switch input {
+	position: absolute;
+	right: 0;
+	width: 30px;
+	height: 16px;
+	margin: 0;
+	opacity: 0;
+	cursor: pointer;
+}
+
+.switch-track {
+	position: relative;
+	flex: none;
+	width: 30px;
+	height: 16px;
+	border-radius: 8px;
+	background: var(--stale);
+	transition: background 0.15s;
+	pointer-events: none;
+}
+
+.switch-track::after {
+	content: "";
+	position: absolute;
+	top: 2px;
+	left: 2px;
+	width: 12px;
+	height: 12px;
+	border-radius: 50%;
+	background: #fff;
+	transition: transform 0.15s;
+}
+
+.switch input:checked + .switch-track {
+	background: var(--online);
+}
+
+.switch input:checked + .switch-track::after {
+	transform: translateX(14px);
+}
+
+.switch input:focus-visible + .switch-track {
+	outline: 2px solid #1f6feb;
+	outline-offset: 2px;
+}
+
+.trail-clear {
+	width: 100%;
+	margin-top: 4px;
+	padding: 4px 8px;
+	border: 1px solid #c9ced4;
+	border-radius: 4px;
+	background: #fff;
+	font: inherit;
+	font-size: 12px;
+	cursor: pointer;
+}
+
+.trail-clear:hover {
+	background: #eef1f4;
 }
