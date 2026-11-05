@@ -2,6 +2,10 @@ package com.otonomc3.core.api;
 
 import com.otonomc3.core.alarm.service.AlarmNotFoundException;
 import com.otonomc3.core.alarm.service.InvalidAlarmQueryException;
+import com.otonomc3.core.command.service.CommandNotFoundException;
+import com.otonomc3.core.command.service.DroneNotOnlineException;
+import com.otonomc3.core.command.service.InvalidCommandException;
+import com.otonomc3.core.command.service.SimDisabledException;
 import com.otonomc3.core.drone.service.DroneNotFoundException;
 import com.otonomc3.core.telemetry.service.InvalidTelemetryQueryException;
 import org.springframework.http.HttpStatus;
@@ -39,6 +43,38 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
 		ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, e.getMessage());
 		problem.setTitle("Alarm not found");
 		problem.setProperty("alarmId", e.getAlarmId());
+		return problem;
+	}
+
+	@ExceptionHandler(InvalidCommandException.class)
+	ProblemDetail handleInvalidCommand(InvalidCommandException e) {
+		ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, e.getMessage());
+		problem.setTitle("Invalid command");
+		return problem;
+	}
+
+	@ExceptionHandler(SimDisabledException.class)
+	ProblemDetail handleSimDisabled(SimDisabledException e) {
+		ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.FORBIDDEN, e.getMessage());
+		problem.setTitle("Simulation disabled");
+		problem.setProperty("commandType", e.getType());
+		return problem;
+	}
+
+	@ExceptionHandler(DroneNotOnlineException.class)
+	ProblemDetail handleDroneNotOnline(DroneNotOnlineException e) {
+		ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, e.getMessage());
+		problem.setTitle("Drone not online");
+		problem.setProperty("droneId", e.getDroneId());
+		problem.setProperty("linkStatus", e.getLinkStatus());
+		return problem;
+	}
+
+	@ExceptionHandler(CommandNotFoundException.class)
+	ProblemDetail handleCommandNotFound(CommandNotFoundException e) {
+		ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, e.getMessage());
+		problem.setTitle("Command not found");
+		problem.setProperty("commandId", e.getCommandId());
 		return problem;
 	}
 

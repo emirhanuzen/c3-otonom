@@ -40,6 +40,12 @@ public class RabbitConfig {
 	public static final String LIVE_CONTAINER_FACTORY = "liveContainerFactory";
 	private static final int LIVE_PREFETCH = 100;
 
+	/** Command channel (docs/contracts/command-v1.md); the edge adapter declares the same exchange. */
+	public static final String COMMAND_EXCHANGE = "otonom.command";
+	public static final String COMMAND_ROUTING_KEY_PREFIX = "command.";
+	public static final String COMMAND_RESULTS_QUEUE = "core.command.results";
+	public static final String COMMAND_RESULT_ROUTING_PATTERN = "result.#";
+
 	@Bean
 	TopicExchange telemetryExchange() {
 		// durable, not auto-delete, no arguments: same as the edge adapter's exchange_declare().
@@ -78,6 +84,22 @@ public class RabbitConfig {
 	@Bean
 	Binding liveBinding(Queue liveQueue, TopicExchange telemetryExchange) {
 		return BindingBuilder.bind(liveQueue).to(telemetryExchange).with(TELEMETRY_ROUTING_PATTERN);
+	}
+
+	@Bean
+	TopicExchange commandExchange() {
+		// durable, not auto-delete, no arguments: same as the edge adapter's exchange_declare().
+		return new TopicExchange(COMMAND_EXCHANGE, true, false);
+	}
+
+	@Bean
+	Queue commandResultsQueue() {
+		return QueueBuilder.durable(COMMAND_RESULTS_QUEUE).build();
+	}
+
+	@Bean
+	Binding commandResultsBinding(Queue commandResultsQueue, TopicExchange commandExchange) {
+		return BindingBuilder.bind(commandResultsQueue).to(commandExchange).with(COMMAND_RESULT_ROUTING_PATTERN);
 	}
 
 	@Bean

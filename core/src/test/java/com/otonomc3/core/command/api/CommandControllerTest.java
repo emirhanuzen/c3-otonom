@@ -1,0 +1,157 @@
+package com.otonomc3.core.command.api;
+
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+import java.time.Instant;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+
+import com.otonomc3.core.command.dto.CommandDto;
+import com.otonomc3.core.command.service.CommandNotFoundException;
+import com.otonomc3.core.command.service.CommandService;
+import com.otonomc3.core.command.service.CommandStatus;
+import com.otonomc3.core.command.service.CommandType;
+import com.otonomc3.core.command.service.DroneNotOnlineException;
+import com.otonomc3.core.command.service.InvalidCommandException;
+import com.otonomc3.core.command.service.SimDisabledException;
+import com.otonomc3.core.drone.service.DroneNotFoundException;
+import com.otonomc3.core.drone.service.LinkStatus;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
+import org.springframework.http.MediaType;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.web.servlet.MockMvc;
+
+@WebMvcTest(CommandController.class)
+class CommandControllerTest {
+
+	private static final UUID ID = UUID.fromString("3f2b8c1e-7d4a-4b6e-9f10-2a3b4c5d6e7f");
+	private static final Instant ISSUED = Instant.parse("2026-11-05T12:00:00Z");
+
+	@Autowired
+	private MockMvc mvc;
+
+	@MockitoBean
+	private CommandService service;
+
+	@Test
+	void issueReturns202WithPendingCommand() throws Exception {
+		Map<String, Object> params = Map.of("lat", 38.6063, "lon", 39.2914, "alt", 120.0);
+		when(service.issue(eq(1), eq(CommandType.GOTO), any())).thenReturn(
+				new CommandDto(ID, 1, CommandType.GOTO, params, CommandStatus.PENDING, null, ISSUED, null, null));
+
+		mvc.perform(post("/api/drones/1/commands").contentType(MediaType.APPLICATION_JSON)
+						.content("{\"type\":\"GOTO\",\"params\":{\"lat\":38.6063,\"lon\":39.2914,\"alt\":120}}"))
+				.andExpect(status().isAccepted())
+				.andExpect(header().string("Location", "/api/commands/" + ID))
+				.andExpect(jsonPath("$.id").value(ID.toString()))
+				.andExpect(jsonPath("$.droneId").value(1))
+				.andExpect(jsonPath("$.type").value("GOTO"))
+				.andExpect(jsonPath("$.status").value("PENDING"))
+				.andExpect(jsonPath("$.params.alt").value(120.0))
+				.andExpect(jsonPath("$.issuedAt").value("2026-11-05T12:00:00Z"));
+	}
+
+	@Test
+	void unknownDroneIs404() throws Exception {
+		when(service.issue(eq(9), eq(CommandType.RTL), any())).thenThrow(new DroneNotFoundException(9));
+
+		mvc.perform(post("/api/drones/9/commands").contentType(MediaType.APPLICATION_JSON).content("{\"type\":\"RTL\"}"))
+				.andExpect(status().isNotFound())
+				.andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+				.andExpect(jsonPath("$.title").value("Drone not found"))
+				.andExpect(jsonPath("$.droneId").value(9));
+	}
+
+	@Test
+	void droneNotOnlineIs409() throws Exception {
+		when(service.issue(eq(1), eq(CommandType.RTL), any()))
+				.thenThrow(new DroneNotOnlineException(1, LinkStatus.LOST));
+
+		mvc.perform(post("/api/drones/1/commands").contentType(MediaType.APPLICATION_JSON).content("{\"type\":\"RTL\"}"))
+				.andExpect(status().isConflict())
+				.andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+				.andExpect(jsonPath("$.title").value("Drone not online"))
+				.andExpect(jsonPath("$.droneId").value(1))
+				.andExpect(jsonPath("$.linkStatus").value("LOST"));
+	}
+
+	@Test
+	void simFaultWhileSimulationDisabledIs403() throws Exception {
+		when(service.issue(eq(1), eq(CommandType.FAULT_BATTERY_DRAIN), any()))
+				.thenThrow(new SimDisabledException(CommandType.FAULT_BATTERY_DRAIN));
+
+		mvc.perform(post("/api/drones/1/commands").contentType(MediaType.APPLICATION_JSON)
+						.content("{\"type\":\"FAULT_BATTERY_DRAIN\"}"))
+				.andExpect(status().isForbidden())
+				.andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+				.andExpect(jsonPath("$.title").value("Simulation disabled"))
+				.andExpect(jsonPath("$.commandType").value("FAULT_BATTERY_DRAIN"));
+	}
+
+	@Test
+	void invalidParamsAre400() throws Exception {
+		when(service.issue(eq(1), eq(CommandType.GOTO), any()))
+				.thenThrow(new InvalidCommandException("GOTO: alt must be between 30 and 500, was 20"));
+
+		mvc.perform(post("/api/drones/1/commands").contentType(MediaType.APPLICATION_JSON)
+						.content("{\"type\":\"GOTO\",\"params\":{\"lat\":38.6,\"lon\":39.2,\"alt\":20}}"))
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.title").value("Invalid command"));
+	}
+
+	@Test
+	void unknownOrMissingTypeIs400() throws Exception {
+		mvc.perform(post("/api/drones/1/commands").contentType(MediaType.APPLICATION_JSON)
+						.content("{\"type\":\"SELF_DESTRUCT\"}"))
+				.andExpect(status().isBadRequest())
+				.andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON));
+		mvc.perform(post("/api/drones/1/commands").contentType(MediaType.APPLICATION_JSON).content("{}"))
+				.andExpect(status().isBadRequest())
+				.andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON));
+
+		verifyNoInteractions(service);
+	}
+
+	@Test
+	void listsCommandsOfDrone() throws Exception {
+		when(service.findByDrone(1, 10)).thenReturn(List.of(
+				new CommandDto(ID, 1, CommandType.RTL, Map.of(), CommandStatus.ACCEPTED,
+						"MAV_CMD_NAV_RETURN_TO_LAUNCH accepted", ISSUED, ISSUED.plusMillis(400), null)));
+
+		mvc.perform(get("/api/drones/1/commands").param("limit", "10"))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.length()").value(1))
+				.andExpect(jsonPath("$[0].status").value("ACCEPTED"))
+				.andExpect(jsonPath("$[0].completedAt").value("2026-11-05T12:00:00.400Z"));
+	}
+
+	@Test
+	void unknownCommandIs404() throws Exception {
+		when(service.find(ID)).thenThrow(new CommandNotFoundException(ID));
+
+		mvc.perform(get("/api/commands/" + ID))
+				.andExpect(status().isNotFound())
+				.andExpect(jsonPath("$.title").value("Command not found"))
+				.andExpect(jsonPath("$.commandId").value(ID.toString()));
+	}
+
+	@Test
+	void nonUuidCommandIdIs400() throws Exception {
+		mvc.perform(get("/api/commands/abc"))
+				.andExpect(status().isBadRequest());
+		verifyNoInteractions(service);
+	}
+
+}
