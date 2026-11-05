@@ -1,6 +1,6 @@
 # Edge Adapter
 
-ArduPlane SITL filosundan MAVLink telemetrisini okur, her İHA için JSON anlık görüntüsüne çevirir ve RabbitMQ'daki `otonom.telemetry` topic exchange'ine yayınlar.
+ArduPlane SITL filosundan MAVLink telemetrisini okur, her İHA için JSON anlık görüntüsüne çevirir ve RabbitMQ'daki `otonom.telemetry` topic exchange'ine yayınlar. Ters yönde `otonom.command` exchange'inden komut alır, İHA'ya MAVLink ile uygular ve sonucunu yayınlar.
 
 ## Gereksinimler
 
@@ -61,6 +61,20 @@ mavlink_reader  ->  mavlink_mapper  ->  schema  ->  outbox          ->  publishe
 - `mavlink_mapper.py`: MAVLink'e özel bütün bilgi (birim dönüşümleri, 255/65535 "bilinmiyor" değerleri, uçuş modu ve armed çözümü).
 - `schema.py`: `DroneTelemetry`'den JSON anlık görüntüsü üretir; MAVLink'i bilmez.
 
+Komut yolu ters yöndedir:
+
+```
+command_channel  ->  command_schema  ->  command_executor  ->  mavlink_reader bağlantısı
+(RabbitMQ)           (Command)           (MAVLink adımları)     (İHA)
+```
+
+- `command.py`: komut ve sonuç alan modeli, parametre doğrulama; dış kütüphane import etmez.
+- `command_schema.py`: komut/sonuç JSON'u (sözleşme: `docs/contracts/command-v1.md`).
+- `command_executor.py`: komutu MAVLink mesajlarına çevirir, `COMMAND_ACK` / `PARAM_VALUE` cevaplarını bekleyen komutla eşleştirir, zaman aşımını izler.
+- `command_channel.py`: ayrı bir RabbitMQ bağlantısıyla `edge.commands` kuyruğunu tüketir ve sonuçları yayınlar.
+
+Thread yoktur: komutlar da ana döngüde işlenir ve İHA'nın okunduğu bağlantının üzerinden gönderilir.
+
 Başlama sırası önemli değil. Adaptör, açık olmayan İHA'lara 5 saniyede bir, RabbitMQ'ya ise artan aralıklarla (en fazla 30 saniye) yeniden bağlanmayı dener.
 
 ## Konfigürasyon
@@ -114,3 +128,19 @@ Anlık görüntüler önce bellekteki sınırlı bir tampona (outbox) yazılır 
 - `fixType`, MAVLink `GPS_FIX_TYPE` değeridir (0 GPS yok, 1 fix yok, 2 2D, 3 3D, ...).
 - `sessionId`, adaptör her başladığında bir kez üretilen rastgele UUID'dir; adaptör çalıştığı sürece değişmez.
 - `seq` her adaptör oturumunda her İHA için 0'dan başlar ve mesaj üretilirken atanır; tampon taşması ya da unroutable yüzünden kaybolan mesajlar tüketicide `seq` boşluğu olarak görünür.
+
+## Komutlar
+
+Sözleşmenin tamamı: `docs/contracts/command-v1.md`.
+
+- Adaptör `otonom.command` exchange'ini ve `edge.commands` kuyruğunu (durable, `x-message-ttl` 10 sn, `command.#`) tanımlar ve telemetriden ayrı bir bağlantıyla tüketir. Bağlantı koparsa telemetri yayıncısıyla aynı backoff ile yeniden bağlanır.
+- Mesaj alınır alınmaz ack edilir, sonra uygulanır (at-most-once): adaptör çökerse komut ikinci kez çalışmaz.
+- `issuedAt` 10 saniyeden eskiyse komut uygulanmaz ve `EXPIRED` döner. Tanımsız tip, eksik parametre ya da bilinmeyen İHA `REJECTED` döner. İHA 5 saniye içinde cevap vermezse `TIMEOUT` döner.
+- Sonuçlar `result.<droneId>` routing key'iyle publisher confirms kullanılarak yayınlanır.
+- Her komut tek satır loglanır:
+
+```
+Command 3f2b8c1e-... drone=3 type=RTL status=ACCEPTED: MAV_CMD_NAV_RETURN_TO_LAUNCH accepted
+```
+
+`FAULT_LINK_DROP` İHA'ya bir şey göndermez; adaptör o İHA'nın anlık görüntülerini istenen süre boyunca üretmez, böylece çekirdek bağlantı kopmasını görür. Bu sırada `seq` ilerlemez.

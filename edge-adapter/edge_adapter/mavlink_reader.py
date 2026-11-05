@@ -9,6 +9,10 @@ Based on experiments/read_fleet.py, with two differences:
 
 The reader stores the latest raw message of each wanted type per aircraft.
 Turning them into JSON (and converting units) is the job of schema.py.
+
+Command replies (COMMAND_ACK, PARAM_VALUE) are not stored but handed to the
+listeners registered with add_listener(), and connection_for() gives the
+connection an aircraft is read from, so commands go out on that same link.
 """
 
 import logging
@@ -21,6 +25,8 @@ log = logging.getLogger(__name__)
 
 # The MAVLink message types we care about. Everything else is ignored.
 WANTED = {"HEARTBEAT", "GLOBAL_POSITION_INT", "VFR_HUD", "SYS_STATUS", "GPS_RAW_INT"}
+# Replies to commands, passed on to the listeners instead of being stored.
+FORWARDED = {"COMMAND_ACK", "PARAM_VALUE"}
 
 RECONNECT_INTERVAL_S = 5  # seconds between two connection attempts of one aircraft
 # pymavlink does not raise when SITL closes the TCP socket, recv() just keeps
@@ -54,6 +60,19 @@ class MavlinkReader:
         self.stream_rate_hz = max(1, round(stream_rate_hz))
         # One state per aircraft, keyed by system ID. Filled as messages arrive.
         self.fleet = {}
+        # System ID -> the _Link its autopilot was last heard on.
+        self._drone_links = {}
+        # Called as listener(system_id, msg) for every FORWARDED message.
+        self._listeners = []
+
+    def add_listener(self, listener):
+        """Register listener(system_id, msg), called for every COMMAND_ACK and PARAM_VALUE."""
+        self._listeners.append(listener)
+
+    def connection_for(self, sysid):
+        """The open pymavlink connection aircraft sysid is read from, or None."""
+        link = self._drone_links.get(sysid)
+        return link.conn if link is not None else None
 
     # --- Connecting -----------------------------------------------------------
     def _try_connect(self, link, now):
@@ -130,12 +149,23 @@ class MavlinkReader:
     def _handle(self, link, msg, now):
         """Store one message in the state of its sender."""
         kind = msg.get_type()
-        if kind not in WANTED:
+        if kind not in WANTED and kind not in FORWARDED:
             return
 
         # A link can also carry messages from other components (camera, gimbal,
         # another ground station...). We only trust the autopilot itself.
         if msg.get_srcComponent() != mavutil.mavlink.MAV_COMP_ID_AUTOPILOT1:
+            return
+
+        sysid = msg.get_srcSystem()
+        self._drone_links[sysid] = link
+
+        if kind in FORWARDED:
+            for listener in self._listeners:
+                try:
+                    listener(sysid, msg)
+                except Exception:  # noqa: BLE001 - one bad listener must not stop reading
+                    log.exception("Listener failed on %s from aircraft %d", kind, sysid)
             return
 
         # The first autopilot heartbeat tells us who is on the other end of the
@@ -145,7 +175,7 @@ class MavlinkReader:
 
         # The sender's system ID tells us which aircraft this is - not the link
         # it came from.
-        state = self.fleet.setdefault(msg.get_srcSystem(), DroneState())
+        state = self.fleet.setdefault(sysid, DroneState())
         state.messages[kind] = msg
         state.last_seen = now
 

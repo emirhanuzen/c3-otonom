@@ -9,6 +9,10 @@ What it does, in a single loop (no threads):
   4. While RabbitMQ is up, sends buffered snapshots in order, at most
      OUTBOX_FLUSH_BATCH per loop, each one confirmed by the broker.
   5. Every 10 seconds, logs how many messages each aircraft got published.
+  6. Receives commands on a second RabbitMQ connection, carries them out over
+     the aircraft's MAVLink link and publishes their results
+     (docs/contracts/command-v1.md). An aircraft under FAULT_LINK_DROP gets
+     no snapshots for the requested time.
 
 Data flow of one snapshot:
   mavlink_reader (raw MAVLink messages) -> mavlink_mapper (DroneTelemetry)
@@ -28,6 +32,9 @@ import uuid
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 
+from edge_adapter.command_channel import CommandChannel
+from edge_adapter.command_executor import CommandExecutor
+from edge_adapter.command_schema import result_to_json
 from edge_adapter.config import load_config
 from edge_adapter.mavlink_mapper import to_telemetry
 from edge_adapter.mavlink_reader import MavlinkReader
@@ -66,6 +73,12 @@ def run():
                           config.rabbitmq_user, config.rabbitmq_password,
                           max_backoff_s=config.rabbitmq_max_backoff_s)
     outbox = Outbox(config.outbox_max_messages)
+    commands = CommandChannel(config.rabbitmq_host, config.rabbitmq_port,
+                              config.rabbitmq_user, config.rabbitmq_password,
+                              max_backoff_s=config.rabbitmq_max_backoff_s)
+    executor = CommandExecutor(reader)
+    # COMMAND_ACK / PARAM_VALUE read by reader.poll() go straight to the waiting commands.
+    reader.add_listener(executor.on_mavlink)
 
     publish_period = 1 / config.publish_rate_hz
     seq = defaultdict(int)       # next sequence number per aircraft, starts at 0
@@ -78,6 +91,12 @@ def run():
         while True:
             reader.poll()
             publisher.tick()
+            commands.tick()
+            for body in commands.take_received():
+                executor.handle_message(body)
+            executor.tick()
+            for result in executor.take_results():
+                commands.publish_result(result.drone_id, result_to_json(result))
             now = time.monotonic()
 
             if now >= next_publish:
@@ -86,6 +105,8 @@ def run():
                 # sent late still tells when it was measured.
                 timestamp = datetime.now(timezone.utc)
                 for drone_id, state in reader.fresh_drones(config.stale_after_s):
+                    if executor.is_link_dropped(drone_id):
+                        continue  # FAULT_LINK_DROP: the core must see this aircraft go silent
                     telemetry = to_telemetry(drone_id, state)
                     outbox.append(drone_id, to_json(build_snapshot(telemetry, session_id, seq[drone_id], timestamp)))
                     seq[drone_id] += 1
@@ -111,6 +132,7 @@ def run():
     finally:
         reader.close()
         publisher.close()
+        commands.close()
         log.info("All connections closed")
 
 
