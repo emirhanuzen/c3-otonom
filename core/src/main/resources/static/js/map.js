@@ -7,6 +7,10 @@
  *
  * The alarm panel loads the active alarms from GET /api/alarms and then follows
  * the change events on /topic/alarms.
+ *
+ * Clicking a drone (icon or list) selects it for the command buttons of the
+ * panel. Command results arrive on /topic/commands and are shown as toasts.
+ * Shared command helpers are in commands.js.
  */
 (() => {
 	const CENTER = [38.6069, 39.2914]; // Elazığ Airport
@@ -94,6 +98,31 @@
 	 */
 	const clearedAlarmIds = new Set();
 
+	// --- Command state -------------------------------------------------------------
+
+	const Commands = window.OtonomCommands;
+	const GOTO_DEFAULT_ALT_M = 100;
+	const TOAST_ACCEPTED_MS = 5000;
+	const TOAST_FAILED_MS = 10000;
+	/** A PENDING toast normally turns final within 12 s (the core's timeout); this is a safety net. */
+	const TOAST_PENDING_MS = 20000;
+	const COMMAND_STATUS_MEMORY = 200;
+
+	let selectedDroneId = null;
+	/** The command waiting for a GOTO point or for the confirm box: { type, droneId, params?, marker? }. */
+	let pendingCommand = null;
+	let pickingTarget = false;
+	/** droneId -> { marker, commandId } of the drone's last GOTO target. */
+	const gotoTargets = new Map();
+	// Elements of the panel's command section, set by setupCommandControls() while
+	// the panel is built, which happens before the Commands section below runs.
+	let commandTargetEl;
+	let commandButtons = [];
+	let commandHintEl;
+	let confirmEl;
+	let confirmTextEl;
+	let confirmYesEl;
+
 	// --- Panel -------------------------------------------------------------------
 
 	const panel = L.control({ position: 'topright' });
@@ -109,6 +138,24 @@
 			<div class="connection"><span class="dot"></span><span class="text"></span></div>
 			<h2>İHA'lar</h2>
 			<ul class="drone-list"><li class="empty">Henüz İHA yok</li></ul>
+			<div class="command-controls">
+				<h2>Komutlar</h2>
+				<div class="command-target"></div>
+				<div class="command-buttons">
+					<button type="button" data-command="RTL">Eve dön</button>
+					<button type="button" data-command="RESUME_MISSION">Göreve devam</button>
+					<button type="button" data-command="LOITER">Bekle</button>
+					<button type="button" data-command="GOTO">Noktaya git</button>
+				</div>
+				<div class="command-hint" hidden>Hedef için haritaya tıklayın · ESC: iptal</div>
+				<div class="command-confirm" hidden>
+					<div class="text"></div>
+					<div class="confirm-actions">
+						<button type="button" class="confirm-yes">Gönder</button>
+						<button type="button" class="confirm-no">Vazgeç</button>
+					</div>
+				</div>
+			</div>
 			<div class="trail-controls">
 				<h2>İzler</h2>
 				<label class="control-row">
@@ -139,6 +186,7 @@
 			}
 		});
 		container.querySelector('.trail-clear').addEventListener('click', clearAllTrails);
+		setupCommandControls(container);
 		return container;
 	};
 	panel.addTo(map);
@@ -161,7 +209,10 @@
 			+ '<span class="swatch" title="İz rengi"></span><span class="link"></span>';
 		item.querySelector('.name').textContent = label(droneId);
 		item.querySelector('.swatch').style.background = droneColor(droneId);
-		item.addEventListener('click', () => focusDrone(droneId));
+		item.addEventListener('click', () => {
+			selectDrone(droneId);
+			focusDrone(droneId);
+		});
 
 		listEl.querySelector('.empty')?.remove();
 		// Keep the list ordered by droneId.
@@ -174,6 +225,7 @@
 		const { state, listItem } = entry;
 		listItem.className = `status-${state.linkStatus.toLowerCase()}`;
 		listItem.classList.toggle('no-position', !entry.marker);
+		listItem.classList.toggle('selected', state.droneId === selectedDroneId);
 		listItem.querySelector('.link').textContent = LINK_LABELS[state.linkStatus] ?? state.linkStatus;
 	}
 
@@ -211,6 +263,9 @@
 			updateMarker(entry);
 		}
 		updateListItem(entry);
+		if (state.droneId === selectedDroneId) {
+			updateCommandControls();
+		}
 	}
 
 	function createMarker(entry, latLng) {
@@ -231,6 +286,7 @@
 		entry.marker = L.marker(latLng, { icon }).addTo(map);
 		// A function, so popup.update() re-renders it with the latest state.
 		entry.marker.bindPopup(() => popupHtml(drones.get(droneId).state));
+		entry.marker.on('click', () => selectDrone(droneId));
 	}
 
 	function updateMarker(entry) {
@@ -239,7 +295,8 @@
 		if (element) {
 			const status = state.linkStatus.toLowerCase();
 			const ring = hasCriticalAlarm(state.droneId) ? ' has-critical' : '';
-			element.querySelector('.drone-icon').className = `drone-icon status-${status}${ring}`;
+			const selected = state.droneId === selectedDroneId ? ' selected' : '';
+			element.querySelector('.drone-icon').className = `drone-icon status-${status}${ring}${selected}`;
 			const heading = state.position?.heading;
 			element.querySelector('.drone-plane').style.transform = heading == null ? '' : `rotate(${heading}deg)`;
 		}
@@ -263,6 +320,279 @@
 			.map(([name, value]) => `<tr><th>${name}</th><td>${escapeHtml(value ?? '—')}</td></tr>`)
 			.join('');
 		return `<div class="drone-popup"><h3>${label(state.droneId)}</h3><table>${body}</table></div>`;
+	}
+
+	// --- Commands ------------------------------------------------------------------
+
+	function setupCommandControls(container) {
+		commandTargetEl = container.querySelector('.command-target');
+		commandButtons = [...container.querySelectorAll('.command-buttons button')];
+		commandHintEl = container.querySelector('.command-hint');
+		confirmEl = container.querySelector('.command-confirm');
+		confirmTextEl = confirmEl.querySelector('.text');
+		confirmYesEl = confirmEl.querySelector('.confirm-yes');
+		commandButtons.forEach((button) => {
+			button.addEventListener('click', () => onCommandButton(button.dataset.command));
+		});
+		confirmYesEl.addEventListener('click', confirmPendingCommand);
+		confirmEl.querySelector('.confirm-no').addEventListener('click', cancelPendingCommand);
+		updateCommandControls();
+	}
+
+	function selectDrone(droneId) {
+		if (selectedDroneId === droneId) {
+			return;
+		}
+		cancelPendingCommand();
+		const previous = drones.get(selectedDroneId);
+		selectedDroneId = droneId;
+		[previous, drones.get(droneId)].forEach((entry) => {
+			if (entry) {
+				updateListItem(entry);
+				if (entry.marker) {
+					updateMarker(entry);
+				}
+			}
+		});
+		updateCommandControls();
+	}
+
+	function isOnline(droneId) {
+		return drones.get(droneId)?.state.linkStatus === 'ONLINE';
+	}
+
+	/** Buttons work only for a selected, ONLINE drone and while no confirm box or point pick is open. */
+	function updateCommandControls() {
+		const entry = drones.get(selectedDroneId);
+		if (!entry) {
+			commandTargetEl.textContent = 'İHA seçilmedi (haritada veya listede bir İHA\'ya tıklayın)';
+		} else if (entry.state.linkStatus === 'ONLINE') {
+			commandTargetEl.textContent = label(selectedDroneId);
+		} else {
+			const link = LINK_LABELS[entry.state.linkStatus] ?? entry.state.linkStatus;
+			commandTargetEl.textContent = `${label(selectedDroneId)} · ${link}, komut gönderilemez`;
+		}
+		const online = isOnline(selectedDroneId);
+		commandButtons.forEach((button) => {
+			button.disabled = !online || pendingCommand !== null;
+		});
+		confirmYesEl.disabled = !(pendingCommand && isOnline(pendingCommand.droneId));
+		// A drone that drops offline while its GOTO point is being picked cannot take it.
+		if (pickingTarget && !online) {
+			cancelPendingCommand();
+		}
+	}
+
+	function onCommandButton(type) {
+		const droneId = selectedDroneId;
+		if (!isOnline(droneId) || pendingCommand) {
+			return;
+		}
+		if (type === 'GOTO') {
+			startPickingTarget(droneId);
+		} else if (type === 'RTL') {
+			askConfirm({ type, droneId, params: {} }, `${label(droneId)} eve dönsün mü?`);
+		} else {
+			sendCommand(droneId, type, {});
+		}
+	}
+
+	function startPickingTarget(droneId) {
+		pendingCommand = { type: 'GOTO', droneId };
+		pickingTarget = true;
+		commandHintEl.hidden = false;
+		map.getContainer().classList.add('picking-target');
+		updateCommandControls();
+	}
+
+	map.on('click', (event) => {
+		if (!pickingTarget) {
+			return;
+		}
+		pickingTarget = false;
+		commandHintEl.hidden = true;
+		map.getContainer().classList.remove('picking-target');
+
+		const latLng = event.latlng.wrap();
+		const { droneId } = pendingCommand;
+		pendingCommand.params = { lat: round7(latLng.lat), lon: round7(latLng.lng), alt: GOTO_DEFAULT_ALT_M };
+		pendingCommand.marker = createTargetMarker(droneId, latLng);
+		askConfirm(pendingCommand, `${label(droneId)} bu noktaya gitsin mi? `
+			+ `${formatNumber(latLng.lat, 5)}, ${formatNumber(latLng.lng, 5)} · ${GOTO_DEFAULT_ALT_M} m`);
+	});
+
+	document.addEventListener('keydown', (event) => {
+		if (event.key === 'Escape' && pendingCommand) {
+			cancelPendingCommand();
+		}
+	});
+
+	function askConfirm(command, text) {
+		pendingCommand = command;
+		confirmTextEl.textContent = text;
+		confirmEl.hidden = false;
+		updateCommandControls();
+		confirmYesEl.focus();
+	}
+
+	function confirmPendingCommand() {
+		const command = pendingCommand;
+		if (!command || !isOnline(command.droneId)) {
+			return;
+		}
+		pendingCommand = null;
+		confirmEl.hidden = true;
+		updateCommandControls();
+		sendCommand(command.droneId, command.type, command.params, command.marker);
+	}
+
+	function cancelPendingCommand() {
+		if (!pendingCommand && !pickingTarget) {
+			return;
+		}
+		pendingCommand?.marker?.remove();
+		pendingCommand = null;
+		pickingTarget = false;
+		commandHintEl.hidden = true;
+		confirmEl.hidden = true;
+		map.getContainer().classList.remove('picking-target');
+		updateCommandControls();
+	}
+
+	async function sendCommand(droneId, type, params, targetMarker) {
+		try {
+			const command = await Commands.send(droneId, type, params);
+			if (targetMarker) {
+				setGotoTarget(droneId, targetMarker, command.id);
+			}
+			handleCommandEvent(command);
+		} catch (error) {
+			targetMarker?.remove();
+			showToast('failed', `${label(droneId)} · ${Commands.TYPE_LABELS[type] ?? type}`,
+				'Gönderilemedi', error.message, TOAST_FAILED_MS);
+		}
+	}
+
+	// --- GOTO target markers -----------------------------------------------------------
+
+	function createTargetMarker(droneId, latLng) {
+		const icon = L.divIcon({
+			className: 'goto-target',
+			iconSize: [18, 18],
+			iconAnchor: [9, 9],
+			html: `<span style="--drone-color: ${droneColor(droneId)}"></span>`,
+		});
+		return L.marker(latLng, { icon, interactive: false, keyboard: false }).addTo(map);
+	}
+
+	/** One target per drone: a new GOTO replaces the previous one. */
+	function setGotoTarget(droneId, marker, commandId) {
+		gotoTargets.get(droneId)?.marker.remove();
+		gotoTargets.set(droneId, { marker, commandId });
+		// The result may already have arrived over STOMP before the POST answered.
+		const status = commandStatuses.get(commandId);
+		if (status) {
+			removeFailedGotoTarget(commandId, status);
+		}
+	}
+
+	/** The target of a GOTO that did not succeed is taken off the map. */
+	function removeFailedGotoTarget(commandId, status) {
+		if (!Commands.isFinal(status) || status === 'ACCEPTED') {
+			return;
+		}
+		for (const [droneId, target] of gotoTargets) {
+			if (target.commandId === commandId) {
+				target.marker.remove();
+				gotoTargets.delete(droneId);
+			}
+		}
+	}
+
+	// --- Command results (toasts) --------------------------------------------------------
+
+	const toastContainer = document.createElement('div');
+	toastContainer.className = 'toasts';
+	toastContainer.setAttribute('role', 'status');
+	toastContainer.setAttribute('aria-live', 'polite');
+	document.body.append(toastContainer);
+
+	/** commandId -> { element, status, timer } */
+	const commandToasts = new Map();
+	/** commandId -> last known status; bounded, oldest entries are forgotten. */
+	const commandStatuses = new Map();
+
+	/** A CommandDto from /topic/commands or from a POST answer. */
+	function handleCommandEvent(command) {
+		const known = commandStatuses.get(command.id);
+		// A late PENDING must not overwrite a final status.
+		if (known && Commands.isFinal(known) && !Commands.isFinal(command.status)) {
+			return;
+		}
+		commandStatuses.delete(command.id);
+		commandStatuses.set(command.id, command.status);
+		if (commandStatuses.size > COMMAND_STATUS_MEMORY) {
+			commandStatuses.delete(commandStatuses.keys().next().value);
+		}
+		showCommandToast(command);
+		removeFailedGotoTarget(command.id, command.status);
+	}
+
+	function showCommandToast(command) {
+		let toast = commandToasts.get(command.id);
+		if (!toast) {
+			toast = { element: null, status: null, timer: null };
+			commandToasts.set(command.id, toast);
+		}
+		toast.status = command.status;
+		const cls = Commands.statusClass(command.status);
+		const detail = cls === 'failed' ? command.detail : null;
+		const duration = cls === 'pending' ? TOAST_PENDING_MS : (cls === 'accepted' ? TOAST_ACCEPTED_MS : TOAST_FAILED_MS);
+		toast.element = renderToast(toast.element, cls, `${label(command.droneId)} · ${Commands.typeLabel(command)}`,
+			Commands.statusLabel(command.status), detail);
+		clearTimeout(toast.timer);
+		toast.timer = setTimeout(() => {
+			toast.element.remove();
+			commandToasts.delete(command.id);
+		}, duration);
+	}
+
+	/** A toast that belongs to no command, e.g. a refused POST. */
+	function showToast(cls, title, statusText, detail, duration) {
+		const element = renderToast(null, cls, title, statusText, detail);
+		setTimeout(() => element.remove(), duration);
+	}
+
+	function renderToast(element, cls, title, statusText, detail) {
+		if (!element) {
+			element = document.createElement('div');
+			element.innerHTML = '<div class="toast-head"><span class="toast-title"></span>'
+				+ '<span class="toast-status"></span></div><div class="toast-detail"></div>';
+			element.title = 'Kapatmak için tıklayın';
+			element.addEventListener('click', () => element.remove());
+			toastContainer.append(element);
+		}
+		element.className = `toast ${cls}`;
+		element.querySelector('.toast-title').textContent = title;
+		element.querySelector('.toast-status').textContent = statusText;
+		const detailEl = element.querySelector('.toast-detail');
+		detailEl.textContent = detail ?? '';
+		detailEl.hidden = !detail;
+		return element;
+	}
+
+	// --- Simulation ------------------------------------------------------------------
+
+	function addTestPageLink() {
+		const control = L.control({ position: 'topleft' });
+		control.onAdd = () => {
+			const link = L.DomUtil.create('a', 'test-page-link');
+			link.href = 'test.html';
+			link.textContent = 'Test sayfası';
+			link.title = 'Simülasyon arızalarını tetikleme sayfası';
+			return link;
+		};
+		control.addTo(map);
 	}
 
 	// --- Alarms ------------------------------------------------------------------
@@ -585,6 +915,10 @@
 		return `${seconds} sn`;
 	}
 
+	function round7(value) {
+		return Math.round(value * 1e7) / 1e7;
+	}
+
 	function withUnit(value, unit) {
 		return value == null ? null : `${value} ${unit}`;
 	}
@@ -600,6 +934,15 @@
 	setInterval(pruneAllTrails, TRAIL_PRUNE_INTERVAL_MS);
 	setInterval(updateAlarmDurations, ALARM_DURATION_REFRESH_MS);
 	loadAlarms();
+
+	fetch('/api/sim/status')
+		.then((response) => (response.ok ? response.json() : null))
+		.then((status) => {
+			if (status?.enabled) {
+				addTestPageLink();
+			}
+		})
+		.catch((error) => console.error('Simülasyon durumu alınamadı:', error));
 
 	fetch('/api/drones')
 		.then((response) => {
@@ -619,6 +962,7 @@
 			setConnection('connected');
 			client.subscribe('/topic/drones', (message) => JSON.parse(message.body).forEach(update));
 			client.subscribe('/topic/alarms', (message) => handleAlarmEvent(JSON.parse(message.body)));
+			client.subscribe('/topic/commands', (message) => handleCommandEvent(JSON.parse(message.body)));
 			// Events sent while disconnected were missed, so the list is reloaded on every (re)connect.
 			loadAlarms();
 		},

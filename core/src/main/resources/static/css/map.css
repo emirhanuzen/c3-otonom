@@ -5,6 +5,10 @@
 	--critical: #d1242f;
 	--critical-bg: #fde4e4;
 	--warning: #e67700;
+	--accent: #1f6feb;
+	--accepted-bg: #e6f4ea;
+	--failed-bg: #fdecea;
+	--pending-bg: #f1f3f5;
 	--panel-bg: rgba(255, 255, 255, 0.95);
 	--text: #1f2328;
 	--muted: #59636e;
@@ -76,6 +80,16 @@ body {
 
 .drone-icon.status-lost .drone-lost {
 	display: block;
+}
+
+/* Dashed ring around the drone selected for commands. */
+.drone-icon.selected::after {
+	content: "";
+	position: absolute;
+	inset: -10px;
+	border: 2px dashed var(--accent);
+	border-radius: 50%;
+	pointer-events: none;
 }
 
 /* Red ring around a drone that has an active CRITICAL alarm. */
@@ -184,6 +198,11 @@ body {
 
 .drone-list li:hover {
 	background: #eef1f4;
+}
+
+.drone-list li.selected {
+	background: #e3edfd;
+	box-shadow: inset 3px 0 0 var(--accent);
 }
 
 .drone-list li.no-position {
@@ -468,4 +487,181 @@ body {
 .alarm-acked {
 	color: var(--muted);
 	font-size: 12px;
+}
+
+/* --- Commands ------------------------------------------------------------------ */
+
+.command-controls {
+	margin-top: 8px;
+	padding-top: 6px;
+	border-top: 1px solid #e3e6ea;
+}
+
+.command-controls [hidden] {
+	display: none;
+}
+
+.command-target {
+	margin-bottom: 6px;
+	color: var(--muted);
+	font-size: 12px;
+}
+
+.command-buttons {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	gap: 4px;
+}
+
+.command-buttons button,
+.confirm-actions button {
+	padding: 4px 6px;
+	border: 1px solid #c9ced4;
+	border-radius: 4px;
+	background: #fff;
+	font: inherit;
+	font-size: 12px;
+	cursor: pointer;
+}
+
+.command-buttons button:hover:not(:disabled),
+.confirm-actions button:hover:not(:disabled) {
+	background: #eef1f4;
+}
+
+.command-buttons button:disabled,
+.confirm-actions button:disabled {
+	cursor: default;
+	opacity: 0.5;
+}
+
+.command-hint {
+	margin-top: 6px;
+	padding: 4px 6px;
+	border-radius: 4px;
+	background: #e3edfd;
+	font-size: 12px;
+}
+
+.command-confirm {
+	margin-top: 6px;
+	padding: 6px;
+	border: 1px solid var(--accent);
+	border-radius: 4px;
+	background: #f5f9ff;
+	font-size: 12px;
+}
+
+.confirm-actions {
+	display: flex;
+	gap: 4px;
+	margin-top: 6px;
+}
+
+.confirm-actions .confirm-yes {
+	border-color: var(--accent);
+	background: var(--accent);
+	color: #fff;
+}
+
+.confirm-actions .confirm-yes:hover:not(:disabled) {
+	background: #1a5fd0;
+}
+
+/* The map waits for a GOTO point. */
+.leaflet-container.picking-target {
+	cursor: crosshair;
+}
+
+/* GOTO target: a small ring in the drone's color with a dot in the middle. */
+.goto-target {
+	background: none;
+	border: none;
+}
+
+.goto-target span {
+	display: block;
+	width: 14px;
+	height: 14px;
+	border: 2px solid var(--drone-color, var(--accent));
+	border-radius: 50%;
+	background: radial-gradient(circle, var(--drone-color, var(--accent)) 0 2px, rgba(255, 255, 255, 0.7) 3px);
+	box-shadow: 0 0 0 1px #fff;
+}
+
+/* --- Toasts --------------------------------------------------------------------- */
+
+.toasts {
+	position: fixed;
+	left: 12px;
+	bottom: 24px;
+	z-index: 1000;
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	width: 300px;
+	max-width: calc(100vw - 24px);
+	pointer-events: none;
+}
+
+.toast {
+	padding: 6px 10px;
+	border-left: 4px solid var(--stale);
+	border-radius: 4px;
+	background: var(--pending-bg);
+	box-shadow: 0 1px 5px rgba(0, 0, 0, 0.25);
+	font-size: 13px;
+	cursor: pointer;
+	pointer-events: auto;
+}
+
+.toast.accepted {
+	border-left-color: var(--online);
+	background: var(--accepted-bg);
+}
+
+.toast.failed {
+	border-left-color: var(--critical);
+	background: var(--failed-bg);
+}
+
+.toast-head {
+	display: flex;
+	justify-content: space-between;
+	gap: 8px;
+}
+
+.toast-title {
+	font-weight: 600;
+}
+
+.toast-status {
+	white-space: nowrap;
+}
+
+.toast.accepted .toast-status { color: var(--online); }
+.toast.failed .toast-status { color: var(--critical); }
+
+.toast-detail {
+	margin-top: 2px;
+	color: var(--muted);
+	font-size: 12px;
+}
+
+/* --- Test page link ---------------------------------------------------------------- */
+
+.test-page-link {
+	display: block;
+	padding: 4px 8px;
+	border-radius: 4px;
+	background: var(--panel-bg);
+	box-shadow: 0 1px 5px rgba(0, 0, 0, 0.3);
+	color: var(--accent);
+	font-size: 13px;
+	font-weight: 600;
+	text-decoration: none;
+}
+
+.test-page-link:hover {
+	text-decoration: underline;
 }

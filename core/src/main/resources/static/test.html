@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="tr">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Otonom C3 — Test Sayfası</title>
+	<link rel="stylesheet" href="css/map.css">
+	<link rel="stylesheet" href="css/test.css">
+</head>
+<body class="test-page">
+	<header class="test-header">
+		<h1>Simülasyon test sayfası</h1>
+		<div class="connection"><span class="dot"></span><span class="text">Yükleniyor…</span></div>
+		<a href="./" class="back-link">Haritaya dön</a>
+	</header>
+
+	<main>
+		<p class="notice" id="notice" hidden></p>
+
+		<section id="fleet" hidden>
+			<h2>İHA'lar ve arıza komutları</h2>
+			<p class="hint">Arızalar SITL parametrelerini değiştirir. Komutlar yalnızca çevrimiçi İHA'lara gönderilebilir.</p>
+			<div class="table-wrap">
+				<table class="fleet-table">
+					<thead>
+						<tr>
+							<th>İHA</th>
+							<th>Bağlantı</th>
+							<th class="num">Batarya</th>
+							<th>GPS (fix / uydu)</th>
+							<th class="num">İrtifa</th>
+							<th>Mod</th>
+							<th>Arıza komutları</th>
+						</tr>
+					</thead>
+					<tbody id="fleet-body">
+						<tr class="empty"><td colspan="7">Henüz İHA yok</td></tr>
+					</tbody>
+				</table>
+			</div>
+		</section>
+
+		<section id="history" hidden>
+			<h2>Son komutlar</h2>
+			<div class="table-wrap">
+				<table class="history-table">
+					<thead>
+						<tr>
+							<th>Zaman</th>
+							<th>İHA</th>
+							<th>Komut</th>
+							<th>Durum</th>
+							<th>Ayrıntı</th>
+						</tr>
+					</thead>
+					<tbody id="history-body">
+						<tr class="empty"><td colspan="5">Henüz komut yok</td></tr>
+					</tbody>
+				</table>
+			</div>
+		</section>
+	</main>
+
+	<script src="https://cdn.jsdelivr.net/npm/@stomp/stompjs@7.0.0/bundles/stomp.umd.min.js"></script>
+	<script src="js/commands.js"></script>
+	<script src="js/test.js"></script>
+</body>
+</html>

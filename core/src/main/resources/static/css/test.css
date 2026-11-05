@@ -1,0 +1,204 @@
+/*
+ * Test page (test.html). Colors and the connection indicator come from map.css,
+ * which is loaded first.
+ */
+
+body.test-page {
+	height: auto;
+	min-height: 100%;
+	background: #f6f8fa;
+	font-size: 14px;
+}
+
+.test-header {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 8px 16px;
+	padding: 12px 16px;
+	border-bottom: 1px solid #e3e6ea;
+	background: #fff;
+}
+
+.test-header h1 {
+	margin: 0;
+	margin-right: auto;
+	font-size: 18px;
+}
+
+/* map.css gives the indicator a bottom border for the panel; not needed here. */
+.test-header .connection {
+	margin: 0;
+	padding: 0;
+	border: none;
+}
+
+.back-link {
+	color: var(--accent);
+	font-weight: 600;
+	text-decoration: none;
+}
+
+.back-link:hover {
+	text-decoration: underline;
+}
+
+main {
+	max-width: 1200px;
+	margin: 0 auto;
+	padding: 16px;
+}
+
+section + section {
+	margin-top: 24px;
+}
+
+h2 {
+	margin: 0 0 4px;
+	font-size: 15px;
+}
+
+.hint {
+	margin: 0 0 8px;
+	color: var(--muted);
+	font-size: 13px;
+}
+
+.notice {
+	margin: 48px auto;
+	color: var(--muted);
+	font-size: 18px;
+	text-align: center;
+}
+
+.table-wrap {
+	overflow-x: auto;
+	border: 1px solid #e3e6ea;
+	border-radius: 6px;
+	background: #fff;
+}
+
+table {
+	width: 100%;
+	border-collapse: collapse;
+}
+
+th,
+td {
+	padding: 6px 10px;
+	border-bottom: 1px solid #eef1f4;
+	text-align: left;
+	vertical-align: middle;
+	white-space: nowrap;
+}
+
+thead th {
+	background: #f6f8fa;
+	color: var(--muted);
+	font-size: 12px;
+	font-weight: 600;
+}
+
+tbody tr:last-child th,
+tbody tr:last-child td {
+	border-bottom: none;
+}
+
+.num {
+	text-align: right;
+	font-variant-numeric: tabular-nums;
+}
+
+tr.empty td {
+	color: var(--muted);
+}
+
+/* --- Fleet table ---------------------------------------------------------------- */
+
+.fleet-table .dot {
+	display: inline-block;
+	width: 9px;
+	height: 9px;
+	border-radius: 50%;
+	background: var(--stale);
+	vertical-align: middle;
+}
+
+.fleet-table tr.status-online .dot { background: var(--online); }
+.fleet-table tr.status-lost .dot { background: var(--lost); }
+.fleet-table tr.status-stale td,
+.fleet-table tr.status-lost td { color: var(--muted); }
+
+.faults {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 4px;
+}
+
+.faults button,
+.faults select {
+	padding: 3px 8px;
+	border: 1px solid #c9ced4;
+	border-radius: 4px;
+	background: #fff;
+	color: var(--text);
+	font: inherit;
+	font-size: 12px;
+}
+
+.faults button {
+	cursor: pointer;
+}
+
+.faults button:hover:not(:disabled) {
+	background: #eef1f4;
+}
+
+.faults button:disabled,
+.faults select:disabled {
+	cursor: default;
+	opacity: 0.5;
+}
+
+.faults .link-drop {
+	display: inline-flex;
+	gap: 2px;
+}
+
+.faults .reset {
+	border-color: var(--accent);
+	color: var(--accent);
+}
+
+/* --- History table ---------------------------------------------------------------- */
+
+.history-table .time {
+	font-variant-numeric: tabular-nums;
+}
+
+.history-table .detail {
+	color: var(--muted);
+	white-space: normal;
+}
+
+.status-badge {
+	display: inline-block;
+	padding: 0 6px;
+	border-radius: 3px;
+	background: var(--pending-bg);
+	color: var(--muted);
+	font-size: 12px;
+	font-weight: 600;
+	line-height: 18px;
+}
+
+.command-accepted .status-badge {
+	background: var(--accepted-bg);
+	color: var(--online);
+}
+
+.command-failed .status-badge {
+	background: var(--failed-bg);
+	color: var(--critical);
+}
