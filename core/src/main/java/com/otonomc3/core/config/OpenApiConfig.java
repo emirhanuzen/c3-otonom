@@ -16,7 +16,7 @@ public class OpenApiConfig {
 	OpenAPI openApi() {
 		return new OpenAPI().info(new Info()
 				.title("OTONOM-C3 API")
-				.description("İHA'ların canlı durumunu, alarmlarını ve kayıtlı telemetri geçmişini sunan, İHA'lara komut gönderen REST API. "
+				.description("İHA'ların canlı durumunu, alarmlarını, yasak bölgeleri ve kayıtlı telemetri geçmişini sunan, İHA'lara komut gönderen REST API. "
 						+ "Canlı durum bellekten okunur; alarmlar ve geçmiş telemetri PostGIS veritabanından gelir. "
 						+ "Hata cevapları RFC 9457 (application/problem+json) biçimindedir.")
 				.version(API_VERSION));

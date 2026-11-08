@@ -7,6 +7,8 @@ import com.otonomc3.core.command.service.DroneNotOnlineException;
 import com.otonomc3.core.command.service.InvalidCommandException;
 import com.otonomc3.core.command.service.SimDisabledException;
 import com.otonomc3.core.drone.service.DroneNotFoundException;
+import com.otonomc3.core.geofence.service.GeofenceNotFoundException;
+import com.otonomc3.core.geofence.service.InvalidGeofenceException;
 import com.otonomc3.core.telemetry.service.InvalidTelemetryQueryException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
@@ -82,6 +84,21 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
 	ProblemDetail handleInvalidAlarmQuery(InvalidAlarmQueryException e) {
 		ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, e.getMessage());
 		problem.setTitle("Invalid query");
+		return problem;
+	}
+
+	@ExceptionHandler(InvalidGeofenceException.class)
+	ProblemDetail handleInvalidGeofence(InvalidGeofenceException e) {
+		ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, e.getMessage());
+		problem.setTitle("Invalid geofence");
+		return problem;
+	}
+
+	@ExceptionHandler(GeofenceNotFoundException.class)
+	ProblemDetail handleGeofenceNotFound(GeofenceNotFoundException e) {
+		ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, e.getMessage());
+		problem.setTitle("Geofence not found");
+		problem.setProperty("geofenceId", e.getGeofenceId());
 		return problem;
 	}
 

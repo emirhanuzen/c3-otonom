@@ -665,3 +665,160 @@ body {
 .test-page-link:hover {
 	text-decoration: underline;
 }
+
+/* --- No-fly zones (geofences.js) ---------------------------------------------------- */
+
+/* Zone name in the middle of its polygon. */
+.leaflet-tooltip.geofence-label {
+	padding: 1px 6px;
+	border: none;
+	border-radius: 3px;
+	background: rgba(255, 255, 255, 0.8);
+	box-shadow: none;
+	color: var(--critical);
+	font-size: 12px;
+	font-weight: 600;
+	white-space: nowrap;
+}
+
+.leaflet-tooltip.geofence-label::before {
+	display: none;
+}
+
+.leaflet-tooltip.geofence-label.passive {
+	color: var(--muted);
+	font-weight: normal;
+}
+
+.geofence-control {
+	width: 220px;
+	padding: 6px;
+	border-radius: 6px;
+	background: var(--panel-bg);
+	box-shadow: 0 1px 5px rgba(0, 0, 0, 0.3);
+	font-size: 12px;
+}
+
+.geofence-control [hidden] {
+	display: none;
+}
+
+.geofence-control button,
+.geofence-panel button {
+	padding: 4px 8px;
+	border: 1px solid #c9ced4;
+	border-radius: 4px;
+	background: #fff;
+	font: inherit;
+	font-size: 12px;
+	cursor: pointer;
+}
+
+.geofence-control button:hover:not(:disabled),
+.geofence-panel button:hover:not(:disabled) {
+	background: #eef1f4;
+}
+
+.geofence-control button:disabled,
+.geofence-panel button:disabled {
+	cursor: default;
+	opacity: 0.5;
+}
+
+.geofence-draw {
+	width: 100%;
+	font-weight: 600;
+}
+
+.geofence-draw.active {
+	border-color: var(--critical);
+	color: var(--critical);
+}
+
+.geofence-hint {
+	margin-top: 6px;
+	padding: 4px 6px;
+	border-radius: 4px;
+	background: var(--critical-bg);
+}
+
+.geofence-form {
+	margin-top: 6px;
+}
+
+.geofence-form label {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	color: var(--muted);
+}
+
+.geofence-name {
+	padding: 3px 5px;
+	border: 1px solid #c9ced4;
+	border-radius: 4px;
+	font: inherit;
+	color: var(--text);
+}
+
+.geofence-form-actions,
+.geofence-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px;
+	margin-top: 6px;
+}
+
+.geofence-control .geofence-save {
+	border-color: var(--critical);
+	background: var(--critical);
+	color: #fff;
+}
+
+.geofence-control .geofence-save:hover:not(:disabled) {
+	background: #b21f28;
+}
+
+.geofence-error {
+	margin-top: 6px;
+	color: var(--critical);
+	font-size: 12px;
+}
+
+/* The map waits for zone corners. */
+.leaflet-container.drawing-geofence {
+	cursor: crosshair;
+}
+
+.geofence-panel h3 {
+	margin: 0 0 4px;
+	font-size: 14px;
+}
+
+.geofence-state {
+	font-size: 12px;
+}
+
+.geofence-state.active { color: var(--critical); }
+.geofence-state.passive { color: var(--muted); }
+
+.geofence-question {
+	flex-basis: 100%;
+	font-size: 12px;
+	font-weight: 600;
+}
+
+.geofence-panel .danger {
+	border-color: var(--critical);
+	background: var(--critical);
+	color: #fff;
+}
+
+.geofence-panel .danger:hover:not(:disabled) {
+	background: #b21f28;
+}
+
+.geofence-panel .danger-outline {
+	border-color: var(--critical);
+	color: var(--critical);
+}

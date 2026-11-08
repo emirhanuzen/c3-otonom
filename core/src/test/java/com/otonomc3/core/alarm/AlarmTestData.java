@@ -21,7 +21,8 @@ public final class AlarmTestData {
 
 	/** The default thresholds. */
 	public static AlarmProperties properties() {
-		return new AlarmProperties(Duration.ofSeconds(3), 30, 15, 3, 6, 30.0, Set.of("AUTO", "GUIDED", "RTL"), 10.0);
+		return new AlarmProperties(Duration.ofSeconds(3), 30, 15, 3, 6, 30.0, Set.of("AUTO", "GUIDED", "RTL"), 10.0,
+				Duration.ofSeconds(30));
 	}
 
 	/** A healthy, ONLINE drone that triggers no rule until changed. */

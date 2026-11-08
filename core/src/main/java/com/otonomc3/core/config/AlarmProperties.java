@@ -20,6 +20,7 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  * @param lowAltitudeModes       flight modes in which LOW_ALTITUDE is checked; compared case-insensitively
  * @param airborneMargin         an armed drone counts as airborne once it has reached lowAltitudeMeters plus
  *                               this; LOW_ALTITUDE is only checked for airborne drones, so a take-off does not trigger it
+ * @param geofenceLookahead      GEOFENCE_PREDICTED looks this far ahead along the drone's current heading and ground speed
  */
 @ConfigurationProperties("otonom.alarm")
 public record AlarmProperties(
@@ -30,7 +31,8 @@ public record AlarmProperties(
 		@DefaultValue("6") int gpsMinSatellites,
 		@DefaultValue("30") double lowAltitudeMeters,
 		@DefaultValue({ "AUTO", "GUIDED", "RTL" }) Set<String> lowAltitudeModes,
-		@DefaultValue("10") double airborneMargin) {
+		@DefaultValue("10") double airborneMargin,
+		@DefaultValue("30s") Duration geofenceLookahead) {
 
 	public AlarmProperties {
 		if (batteryCriticalPercent >= batteryWarningPercent) {
@@ -42,6 +44,10 @@ public record AlarmProperties(
 		}
 		if (airborneMargin < 0) {
 			throw new IllegalArgumentException("otonom.alarm.airborne-margin must not be negative, was " + airborneMargin);
+		}
+		if (geofenceLookahead.isNegative() || geofenceLookahead.isZero()) {
+			throw new IllegalArgumentException(
+					"otonom.alarm.geofence-lookahead must be positive, was " + geofenceLookahead);
 		}
 		lowAltitudeModes = lowAltitudeModes.stream()
 				.map(mode -> mode.trim().toUpperCase(Locale.ROOT))

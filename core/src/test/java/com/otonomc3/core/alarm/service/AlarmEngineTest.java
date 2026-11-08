@@ -19,6 +19,7 @@ import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -32,6 +33,7 @@ import com.otonomc3.core.drone.service.DroneLiveState;
 import com.otonomc3.core.config.LiveProperties;
 import com.otonomc3.core.drone.service.DroneLiveStateService;
 import com.otonomc3.core.drone.service.LinkStatus;
+import com.otonomc3.core.geofence.service.GeofenceChecker;
 import com.otonomc3.core.telemetry.dto.TelemetryMessageDto;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -51,6 +53,9 @@ class AlarmEngineTest {
 	@Mock
 	private AlarmService alarmService;
 
+	@Mock
+	private GeofenceChecker geofenceChecker;
+
 	private StepClock clock;
 	private AlarmEngine engine;
 	private List<DroneLiveState> states = List.of();
@@ -59,10 +64,11 @@ class AlarmEngineTest {
 	@BeforeEach
 	void setUp() {
 		clock = new StepClock(T0);
-		engine = new AlarmEngine(liveStateService,
+		engine = new AlarmEngine(liveStateService, geofenceChecker,
 				List.of(new LinkRule(), new LowBatteryRule(properties())),
 				alarmService, clock, properties());
 		when(liveStateService.findAll()).thenAnswer(invocation -> states);
+		when(geofenceChecker.check(any())).thenReturn(true);
 		when(alarmService.raise(anyInt(), any(), any())).thenAnswer(invocation -> {
 			int droneId = invocation.getArgument(0);
 			AlarmCondition condition = invocation.getArgument(1);
@@ -193,7 +199,7 @@ class AlarmEngineTest {
 	void linkAlarmIsRaisedAndEscalatedWhileNoMessagesArrive() {
 		DroneLiveStateService liveState = new DroneLiveStateService(clock, new LiveProperties(Duration.ofSeconds(3),
 				Duration.ofSeconds(10), Duration.ofSeconds(5), 1000, Duration.ofSeconds(2), Duration.ofSeconds(2)));
-		AlarmEngine linkEngine = new AlarmEngine(liveState, List.of(new LinkRule(), new LowBatteryRule(properties())),
+		AlarmEngine linkEngine = new AlarmEngine(liveState, geofenceChecker, List.of(new LinkRule(), new LowBatteryRule(properties())),
 				alarmService, clock, properties());
 		liveState.update(new TelemetryMessageDto(2, UUID.fromString("6f1c2a4e-9b1d-4c3e-8a7f-2d5e6b7c8d9e"), 1, 1L, T0,
 				null, null, new TelemetryMessageDto.Battery(80, 15.8), null, null));
@@ -227,6 +233,36 @@ class AlarmEngineTest {
 	}
 
 	@Test
+	void geofenceAlarmIsHeldWhileTheGeofenceCheckFails() {
+		AlarmCondition violation = new AlarmCondition(AlarmType.GEOFENCE_VIOLATION, AlarmSeverity.CRITICAL,
+				"Yasak bölge ihlali: Test");
+		boolean[] inside = { true };
+		AlarmEngine geofenceEngine = new AlarmEngine(liveStateService, geofenceChecker,
+				List.of(state -> inside[0] ? Optional.of(violation) : Optional.empty(),
+						new LowBatteryRule(properties())),
+				alarmService, clock, properties());
+		evaluateAt(geofenceEngine, 0, drone(1).build());
+		verify(alarmService).raise(eq(1), condition(AlarmType.GEOFENCE_VIOLATION, AlarmSeverity.CRITICAL), eq(T0));
+
+		// The check fails for longer than clear-after: the rule sees nothing, but the alarm stays.
+		inside[0] = false;
+		when(geofenceChecker.check(any())).thenReturn(false);
+		for (int second = 1; second <= 6; second++) {
+			evaluateAt(geofenceEngine, second, drone(1).battery(25).build());
+		}
+		verify(alarmService, never()).clear(anyLong(), any());
+		// Other rules keep running.
+		verify(alarmService).raise(eq(1), condition(AlarmType.LOW_BATTERY, AlarmSeverity.WARNING), any());
+
+		// The check works again and the drone is outside: cleared after clear-after.
+		when(geofenceChecker.check(any())).thenReturn(true);
+		for (int second = 7; second <= 9; second++) {
+			evaluateAt(geofenceEngine, second, drone(1).battery(25).build());
+		}
+		verify(alarmService).clear(eq(1L), eq(T0.plusSeconds(9)));
+	}
+
+	@Test
 	void clearsAlarmsLeftByPreviousRunOnStartup() {
 		engine.clearLeftoverAlarms();
 
@@ -234,9 +270,13 @@ class AlarmEngineTest {
 	}
 
 	private void evaluateAt(int second, DroneLiveState... droneStates) {
+		evaluateAt(engine, second, droneStates);
+	}
+
+	private void evaluateAt(AlarmEngine target, int second, DroneLiveState... droneStates) {
 		clock.set(T0.plusSeconds(second));
 		states = List.of(droneStates);
-		engine.evaluate();
+		target.evaluate();
 	}
 
 	private static AlarmCondition condition(AlarmType type, AlarmSeverity severity) {

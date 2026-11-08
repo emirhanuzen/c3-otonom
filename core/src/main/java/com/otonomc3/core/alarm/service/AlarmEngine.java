@@ -20,6 +20,7 @@ import com.otonomc3.core.config.AlarmProperties;
 import com.otonomc3.core.drone.service.DroneLiveState;
 import com.otonomc3.core.drone.service.DroneLiveStateService;
 import com.otonomc3.core.drone.service.LinkStatus;
+import com.otonomc3.core.geofence.service.GeofenceChecker;
 import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -41,12 +42,22 @@ import org.springframework.stereotype.Component;
  * keeps moving forward, including on the first evaluation after the link is back,
  * so the condition gets the full clear-after on fresh data before the alarm
  * clears. A low battery alarm therefore survives a link loss.
+ *
+ * <p>Before the rules, the {@link GeofenceChecker} checks all drones against the
+ * no-fly zones in one query; the geofence rules read its result. When that query
+ * fails, the geofence alarms are held the same way for that evaluation, while the
+ * other rules run as usual.
  */
 @Slf4j
 @Component
 public class AlarmEngine {
 
+	/** Held, instead of cleared, in an evaluation in which the geofence check failed. */
+	private static final Set<AlarmType> GEOFENCE_TYPES = Set.of(AlarmType.GEOFENCE_VIOLATION,
+			AlarmType.GEOFENCE_PREDICTED);
+
 	private final DroneLiveStateService liveStateService;
+	private final GeofenceChecker geofenceChecker;
 	private final List<AlarmRule> rules;
 	private final AlarmService alarmService;
 	private final Clock clock;
@@ -57,9 +68,10 @@ public class AlarmEngine {
 	/** Drones whose link was not ONLINE in the previous evaluation. */
 	private Set<Integer> previouslyFrozen = Set.of();
 
-	public AlarmEngine(DroneLiveStateService liveStateService, List<AlarmRule> rules, AlarmService alarmService,
-			Clock clock, AlarmProperties properties) {
+	public AlarmEngine(DroneLiveStateService liveStateService, GeofenceChecker geofenceChecker, List<AlarmRule> rules,
+			AlarmService alarmService, Clock clock, AlarmProperties properties) {
 		this.liveStateService = liveStateService;
+		this.geofenceChecker = geofenceChecker;
 		this.rules = List.copyOf(rules);
 		this.alarmService = alarmService;
 		this.clock = clock;
@@ -84,7 +96,9 @@ public class AlarmEngine {
 		Instant now = clock.instant();
 		Map<AlarmKey, AlarmCondition> seen = new HashMap<>();
 		Set<Integer> frozenDrones = new HashSet<>();
-		for (DroneLiveState state : liveStateService.findAll()) {
+		List<DroneLiveState> states = liveStateService.findAll();
+		Set<AlarmType> heldTypes = checkGeofences(states) ? Set.of() : GEOFENCE_TYPES;
+		for (DroneLiveState state : states) {
 			boolean frozen = state.linkStatus() != LinkStatus.ONLINE;
 			if (frozen) {
 				frozenDrones.add(state.droneId());
@@ -100,12 +114,22 @@ public class AlarmEngine {
 		// Drones thawing in this evaluation are still treated as frozen once.
 		Set<Integer> holdDrones = new HashSet<>(frozenDrones);
 		holdDrones.addAll(previouslyFrozen);
-		clearUnseen(seen.keySet(), holdDrones, now);
+		clearUnseen(seen.keySet(), holdDrones, heldTypes, now);
 		previouslyFrozen = frozenDrones;
 	}
 
-	private static boolean isHeld(AlarmKey key, Set<Integer> holdDrones) {
-		return key.type() != AlarmType.LINK && holdDrones.contains(key.droneId());
+	/** @return false when the check failed; the checker logs that itself */
+	private boolean checkGeofences(List<DroneLiveState> states) {
+		try {
+			return geofenceChecker.check(states);
+		} catch (RuntimeException e) {
+			log.error("Geofence check failed", e);
+			return false;
+		}
+	}
+
+	private static boolean isHeld(AlarmKey key, Set<Integer> holdDrones, Set<AlarmType> heldTypes) {
+		return (key.type() != AlarmType.LINK && holdDrones.contains(key.droneId())) || heldTypes.contains(key.type());
 	}
 
 	private Optional<AlarmCondition> evaluate(AlarmRule rule, DroneLiveState state) {
@@ -137,13 +161,16 @@ public class AlarmEngine {
 		}
 	}
 
-	/** Alarms of holdDrones other than LINK are not cleared; their last-seen time moves to now instead. */
-	private void clearUnseen(Set<AlarmKey> seen, Set<Integer> holdDrones, Instant now) {
+	/**
+	 * Alarms of holdDrones other than LINK, and alarms of heldTypes, are not cleared;
+	 * their last-seen time moves to now instead.
+	 */
+	private void clearUnseen(Set<AlarmKey> seen, Set<Integer> holdDrones, Set<AlarmType> heldTypes, Instant now) {
 		Iterator<Map.Entry<AlarmKey, ActiveAlarm>> iterator = active.entrySet().iterator();
 		while (iterator.hasNext()) {
 			Map.Entry<AlarmKey, ActiveAlarm> entry = iterator.next();
 			ActiveAlarm alarm = entry.getValue();
-			if (isHeld(entry.getKey(), holdDrones) && !seen.contains(entry.getKey())) {
+			if (isHeld(entry.getKey(), holdDrones, heldTypes) && !seen.contains(entry.getKey())) {
 				entry.setValue(new ActiveAlarm(alarm.alarmId(), alarm.severity(), now));
 				continue;
 			}

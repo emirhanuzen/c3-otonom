@@ -11,6 +11,9 @@
  * Clicking a drone (icon or list) selects it for the command buttons of the
  * panel. Command results arrive on /topic/commands and are shown as toasts.
  * Shared command helpers are in commands.js.
+ *
+ * No-fly zones are drawn, created and edited by geofences.js; this file loads
+ * them and forwards the /topic/geofences updates.
  */
 (() => {
 	const CENTER = [38.6069, 39.2914]; // Elazığ Airport
@@ -55,6 +58,8 @@
 		LOW_BATTERY: 'Düşük batarya',
 		GPS_DEGRADED: 'GPS zayıf',
 		LOW_ALTITUDE: 'Düşük irtifa',
+		GEOFENCE_VIOLATION: 'Yasak bölge ihlali',
+		GEOFENCE_PREDICTED: 'Yasak bölgeye yaklaşıyor',
 	};
 	const ALARM_SEVERITY_LABELS = {
 		CRITICAL: 'Kritik',
@@ -87,6 +92,12 @@
 	 * labels always stay above the trails.
 	 */
 	const trailLayer = L.layerGroup().addTo(map);
+
+	const geofences = window.OtonomGeofences.attach(map, {
+		// A click on a zone picks the GOTO target instead of opening the zone's panel.
+		isMapBusy: () => pickingTarget,
+		onDrawStart: () => cancelPendingCommand(),
+	});
 	let trailDurationMs = DEFAULT_TRAIL_DURATION_MS;
 
 	/** alarmId -> alarm (AlarmDto); active alarms only. */
@@ -398,6 +409,7 @@
 	}
 
 	function startPickingTarget(droneId) {
+		geofences.cancelDrawing();
 		pendingCommand = { type: 'GOTO', droneId };
 		pickingTarget = true;
 		commandHintEl.hidden = false;
@@ -934,6 +946,7 @@
 	setInterval(pruneAllTrails, TRAIL_PRUNE_INTERVAL_MS);
 	setInterval(updateAlarmDurations, ALARM_DURATION_REFRESH_MS);
 	loadAlarms();
+	geofences.load();
 
 	fetch('/api/sim/status')
 		.then((response) => (response.ok ? response.json() : null))
@@ -963,8 +976,10 @@
 			client.subscribe('/topic/drones', (message) => JSON.parse(message.body).forEach(update));
 			client.subscribe('/topic/alarms', (message) => handleAlarmEvent(JSON.parse(message.body)));
 			client.subscribe('/topic/commands', (message) => handleCommandEvent(JSON.parse(message.body)));
-			// Events sent while disconnected were missed, so the list is reloaded on every (re)connect.
+			client.subscribe('/topic/geofences', (message) => geofences.setCollection(JSON.parse(message.body)));
+			// Events sent while disconnected were missed, so the lists are reloaded on every (re)connect.
 			loadAlarms();
+			geofences.load();
 		},
 		onWebSocketClose: () => setConnection('disconnected'),
 		onStompError: (frame) => {

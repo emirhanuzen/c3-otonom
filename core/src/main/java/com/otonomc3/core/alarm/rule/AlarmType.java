@@ -13,6 +13,12 @@ public enum AlarmType {
 	GPS_DEGRADED,
 
 	/** An armed drone in an autonomous mode flies below the minimum relative altitude. */
-	LOW_ALTITUDE
+	LOW_ALTITUDE,
+
+	/** The drone is inside an active no-fly zone. */
+	GEOFENCE_VIOLATION,
+
+	/** The drone is outside every active no-fly zone, but its current track enters one within the lookahead. */
+	GEOFENCE_PREDICTED
 
 }
