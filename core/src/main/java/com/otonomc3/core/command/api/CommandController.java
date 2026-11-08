@@ -43,7 +43,8 @@ public class CommandController {
 			description = "Komutu doğrular, kaydeder ve kenar adaptörüne yayınlar. Cevap beklenmez: 202 ile PENDING "
 					+ "durumundaki komut döner (yayınlanamadıysa FAILED). Sonucu GET /api/commands/{commandId} veya "
 					+ "/topic/commands ile izlenir. FAULT_* tipleri yalnızca simülasyon açıkken (otonom.sim.enabled) "
-					+ "kabul edilir.")
+					+ "kabul edilir. GOTO, LOITER ve RESUME_MISSION, İHA'nın son telemetrisinde armed=false veya göreli "
+					+ "irtifa 10 m'nin altındaysa gönderilmez (409); RTL ve FAULT_* bu kontrolden muaftır.")
 	@ApiResponse(responseCode = "202", description = "Komut kaydedildi ve gönderildi (veya gönderilemedi: FAILED)",
 			content = @Content(schema = @Schema(implementation = CommandDto.class)))
 	@ApiResponse(responseCode = "400",
@@ -57,7 +58,9 @@ public class CommandController {
 	@ApiResponse(responseCode = "404", description = "Bu İHA'dan hiç mesaj alınmadı",
 			content = @Content(mediaType = "application/problem+json",
 					schema = @Schema(implementation = ProblemDetail.class)))
-	@ApiResponse(responseCode = "409", description = "İHA'nın bağlantısı ONLINE değil; komut ona ulaşmaz",
+	@ApiResponse(responseCode = "409",
+			description = "İHA'nın bağlantısı ONLINE değil (komut ona ulaşmaz) ya da GOTO/LOITER/RESUME_MISSION için "
+					+ "İHA yerde: armed=false veya göreli irtifa 10 m'nin altında (\"İHA yerde, önce kalkış yapılmalı\")",
 			content = @Content(mediaType = "application/problem+json",
 					schema = @Schema(implementation = ProblemDetail.class)))
 	@PostMapping("/api/drones/{droneId}/commands")

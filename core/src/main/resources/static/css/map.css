@@ -568,6 +568,11 @@ body {
 	background: #1a5fd0;
 }
 
+/* Refused while the drone is on the ground; the button's title says why. */
+.command-buttons button.grounded:disabled {
+	cursor: not-allowed;
+}
+
 /* The map waits for a GOTO point. */
 .leaflet-container.picking-target {
 	cursor: crosshair;
@@ -691,7 +696,7 @@ body {
 }
 
 .geofence-control {
-	width: 220px;
+	width: 240px;
 	padding: 6px;
 	border-radius: 6px;
 	background: var(--panel-bg);
@@ -821,4 +826,65 @@ body {
 .geofence-panel .danger-outline {
 	border-color: var(--critical);
 	color: var(--critical);
+}
+
+/* Zone label color by kind; .passive (not effective) is gray, see above. */
+.leaflet-tooltip.geofence-label.kind-permanent { color: #8b0000; }
+.leaflet-tooltip.geofence-label.kind-temporary { color: #b35c00; }
+.leaflet-tooltip.geofence-label.kind-mission { color: #8e44ad; }
+.leaflet-tooltip.geofence-label.passive { color: var(--muted); }
+
+.geofence-form > label {
+	margin-top: 4px;
+}
+
+.geofence-form input,
+.geofence-form select {
+	padding: 3px 5px;
+	border: 1px solid #c9ced4;
+	border-radius: 4px;
+	font: inherit;
+	color: var(--text);
+}
+
+.geofence-name-row {
+	display: grid;
+	grid-template-columns: 1fr auto;
+	gap: 6px;
+}
+
+.geofence-name-row input {
+	min-width: 0;
+}
+
+.geofence-meta {
+	color: var(--muted);
+	font-size: 12px;
+}
+
+/* --- Coordinate box (right click) ------------------------------------------------ */
+
+.coordinate-popup .leaflet-popup-content {
+	margin: 4px;
+}
+
+.coordinate-box {
+	display: flex;
+	align-items: baseline;
+	gap: 8px;
+	padding: 2px 4px;
+	border: none;
+	background: none;
+	font: inherit;
+	font-size: 12px;
+	cursor: copy;
+}
+
+.coordinate-text {
+	font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+	font-variant-numeric: tabular-nums;
+}
+
+.coordinate-hint {
+	color: var(--accent);
 }

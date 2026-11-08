@@ -58,7 +58,7 @@ class GeofenceCheckerTest {
 	@BeforeEach
 	void createZone() {
 		zone = "TEST-" + UUID.randomUUID();
-		created.add(save(zone, true));
+		created.add(save(zone, true, null, null));
 	}
 
 	@AfterEach
@@ -113,7 +113,7 @@ class GeofenceCheckerTest {
 	void noPredictionWithoutHeadingOrSpeed() {
 		Map<Integer, GeofenceStatus> result = checker.query(List.of(
 				drone(1, ZONE_WEST - 0.001, MID_LAT, null, 40.0),
-				drone(2, ZONE_WEST - 0.001, MID_LAT, 90.0, null)));
+				drone(2, ZONE_WEST - 0.001, MID_LAT, 90.0, null)), T0);
 
 		assertThat(result.get(1).predictedZones()).doesNotContain(zone);
 		assertThat(result.get(2).predictedZones()).doesNotContain(zone);
@@ -124,7 +124,7 @@ class GeofenceCheckerTest {
 		Map<Integer, GeofenceStatus> result = checker.query(List.of(
 				drone(1, 39.305, MID_LAT, 90.0, 20.0),
 				drone(2, ZONE_WEST - 0.01, MID_LAT, 90.0, 40.0),
-				drone(3, ZONE_WEST - 0.01, MID_LAT, 270.0, 40.0)));
+				drone(3, ZONE_WEST - 0.01, MID_LAT, 270.0, 40.0)), T0);
 
 		assertThat(result.get(1).insideZones()).contains(zone);
 		assertThat(result.get(2).insideZones()).doesNotContain(zone);
@@ -136,11 +136,43 @@ class GeofenceCheckerTest {
 	@Test
 	void inactiveZonesAreIgnored() {
 		String inactive = "TEST-" + UUID.randomUUID();
-		created.add(save(inactive, false));
+		created.add(save(inactive, false, null, null));
 
 		GeofenceStatus status = check(drone(1, 39.305, MID_LAT, 90.0, 20.0));
 
 		assertThat(status.insideZones()).contains(zone).doesNotContain(inactive);
+	}
+
+	@Test
+	void expiredZoneIsIgnored() {
+		String expired = "TEST-" + UUID.randomUUID();
+		created.add(save(expired, true, T0.minus(Duration.ofHours(2)), T0.minus(Duration.ofHours(1))));
+		String endsNow = "TEST-" + UUID.randomUUID();
+		created.add(save(endsNow, true, null, T0));
+
+		GeofenceStatus status = check(drone(1, 39.305, MID_LAT, 90.0, 20.0));
+
+		assertThat(status.insideZones()).contains(zone).doesNotContain(expired, endsNow);
+	}
+
+	@Test
+	void zoneThatHasNotStartedIsIgnored() {
+		String later = "TEST-" + UUID.randomUUID();
+		created.add(save(later, true, T0.plus(Duration.ofHours(1)), null));
+
+		GeofenceStatus status = check(drone(1, 39.305, MID_LAT, 90.0, 20.0));
+
+		assertThat(status.insideZones()).contains(zone).doesNotContain(later);
+	}
+
+	@Test
+	void zoneInsideItsValidityWindowCounts() {
+		String current = "TEST-" + UUID.randomUUID();
+		created.add(save(current, true, T0, T0.plus(Duration.ofHours(1))));
+
+		GeofenceStatus status = check(drone(1, 39.305, MID_LAT, 90.0, 20.0));
+
+		assertThat(status.insideZones()).contains(zone, current);
 	}
 
 	@Test
@@ -150,7 +182,7 @@ class GeofenceCheckerTest {
 		DroneLiveState noPosition = new DroneLiveState(new TelemetryMessageDto(2, SESSION, 2, 1L, T0,
 				null, null, null, null, null), T0, Duration.ofMillis(500), LinkStatus.ONLINE);
 
-		assertThat(checker.query(List.of(stale, noPosition))).isEmpty();
+		assertThat(checker.query(List.of(stale, noPosition), T0)).isEmpty();
 	}
 
 	@Test
@@ -158,7 +190,7 @@ class GeofenceCheckerTest {
 		GeoJsonPolygonDto bowtie = polygon(new double[][] {
 				{ 39.30, 38.60 }, { 39.31, 38.61 }, { 39.31, 38.60 }, { 39.30, 38.61 }, { 39.30, 38.60 } });
 
-		assertThatThrownBy(() -> service.create("TEST-bowtie", bowtie))
+		assertThatThrownBy(() -> service.create("TEST-bowtie", bowtie, null, null, null))
 				.isInstanceOf(InvalidGeofenceException.class)
 				.hasMessageContaining("not valid");
 	}
@@ -169,18 +201,22 @@ class GeofenceCheckerTest {
 		GeoJsonPolygonDto large = polygon(new double[][] {
 				{ 39.2, 38.5 }, { 39.3, 38.5 }, { 39.3, 38.6 }, { 39.2, 38.6 }, { 39.2, 38.5 } });
 
-		assertThatThrownBy(() -> service.create("TEST-large", large))
+		assertThatThrownBy(() -> service.create("TEST-large", large, null, null, null))
 				.isInstanceOf(InvalidGeofenceException.class)
 				.hasMessageContaining("50 km²");
 	}
 
 	private GeofenceStatus check(DroneLiveState state) {
-		return checker.query(List.of(state)).get(state.droneId());
+		return checker.query(List.of(state), T0).get(state.droneId());
 	}
 
-	private long save(String name, boolean active) {
+	private long save(String name, boolean active, Instant validFrom, Instant validUntil) {
 		GeofenceEntity entity = new GeofenceEntity();
 		entity.setName(name);
+		entity.setKind(GeofenceKind.TEMPORARY);
+		entity.setSource(GeofenceSource.OPERATOR);
+		entity.setValidFrom(validFrom);
+		entity.setValidUntil(validUntil);
 		entity.setArea(GeofenceValidator.toPolygon(polygon(new double[][] {
 				{ ZONE_WEST, ZONE_SOUTH }, { ZONE_EAST, ZONE_SOUTH }, { ZONE_EAST, ZONE_NORTH },
 				{ ZONE_WEST, ZONE_NORTH }, { ZONE_WEST, ZONE_SOUTH } })));

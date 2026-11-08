@@ -22,6 +22,7 @@ import com.otonomc3.core.command.service.CommandService;
 import com.otonomc3.core.command.service.CommandStatus;
 import com.otonomc3.core.command.service.CommandType;
 import com.otonomc3.core.command.service.DroneNotOnlineException;
+import com.otonomc3.core.command.service.DroneOnGroundException;
 import com.otonomc3.core.command.service.InvalidCommandException;
 import com.otonomc3.core.command.service.SimDisabledException;
 import com.otonomc3.core.drone.service.DroneNotFoundException;
@@ -85,6 +86,22 @@ class CommandControllerTest {
 				.andExpect(jsonPath("$.title").value("Drone not online"))
 				.andExpect(jsonPath("$.droneId").value(1))
 				.andExpect(jsonPath("$.linkStatus").value("LOST"));
+	}
+
+	@Test
+	void droneOnGroundIs409() throws Exception {
+		when(service.issue(eq(1), eq(CommandType.LOITER), any()))
+				.thenThrow(new DroneOnGroundException(1, false, 0.4));
+
+		mvc.perform(post("/api/drones/1/commands").contentType(MediaType.APPLICATION_JSON).content("{\"type\":\"LOITER\"}"))
+				.andExpect(status().isConflict())
+				.andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+				.andExpect(jsonPath("$.title").value("Drone on ground"))
+				.andExpect(jsonPath("$.detail").value("İHA yerde, önce kalkış yapılmalı"))
+				.andExpect(jsonPath("$.droneId").value(1))
+				.andExpect(jsonPath("$.armed").value(false))
+				.andExpect(jsonPath("$.altRel").value(0.4))
+				.andExpect(jsonPath("$.minAltRel").value(10.0));
 	}
 
 	@Test

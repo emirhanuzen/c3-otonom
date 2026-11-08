@@ -5,18 +5,35 @@
  * window.OtonomGeofences.attach(map, hooks).
  *
  * Zones come from GET /api/geofences and /topic/geofences; both carry the full
- * GeoJSON FeatureCollection. Active zones are red, translucent polygons; passive
- * ones gray and dashed. Clicking a zone opens a small panel to switch it
- * active/passive or delete it (with a confirmation inside the panel).
+ * GeoJSON FeatureCollection. Effective zones are translucent polygons colored by
+ * kind: PERMANENT (imported from OpenStreetMap) dark red with a lock in the label,
+ * TEMPORARY orange with its end time, MISSION purple. Zones that are not effective
+ * (passive, not started yet or expired) are gray and dashed. Clicking a zone opens
+ * a small panel; TEMPORARY and MISSION zones can be switched active/passive or
+ * deleted there (with a confirmation inside the panel), PERMANENT ones cannot.
  *
  * "Yasak bölge çiz" starts drawing: every map click adds a corner; a double click
  * or a click on the first corner closes the polygon, and the panel then asks for
- * the name. ESC cancels at any stage. Plain Leaflet, no drawing plugin.
+ * the name, the kind and an optional start and end time. ESC cancels at any stage.
+ * Plain Leaflet, no drawing plugin.
+ *
+ * A right click on the map shows its coordinate; clicking the box copies it.
  */
 window.OtonomGeofences = (() => {
-	const ACTIVE_STYLE = { color: '#d1242f', weight: 2, fillColor: '#d1242f', fillOpacity: 0.2, dashArray: null };
-	const PASSIVE_STYLE = { color: '#8a9099', weight: 2, fillColor: '#8a9099', fillOpacity: 0.08, dashArray: '6 6' };
+	const KIND_COLORS = {
+		PERMANENT: '#8b0000',
+		TEMPORARY: '#e67700',
+		MISSION: '#8e44ad',
+	};
+	const KIND_LABELS = {
+		PERMANENT: 'Kalıcı',
+		TEMPORARY: 'Geçici',
+		MISSION: 'Görev',
+	};
+	const INEFFECTIVE_STYLE = { color: '#8a9099', weight: 2, fillColor: '#8a9099', fillOpacity: 0.08, dashArray: '6 6' };
 	const DRAFT_COLOR = '#d1242f';
+	const OSM_ATTRIBUTION = 'Bölge verisi © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> '
+		+ 'katkıda bulunanlar (ODbL)';
 	/** A click this close (px) to the first corner closes the polygon. */
 	const CLOSE_DISTANCE_PX = 10;
 	/** A click this close (px) to the last corner adds nothing (the second click of a double click). */
@@ -49,6 +66,54 @@ window.OtonomGeofences = (() => {
 
 	function round7(value) {
 		return Math.round(value * 1e7) / 1e7;
+	}
+
+	function zoneStyle(properties) {
+		if (!properties.effective) {
+			return INEFFECTIVE_STYLE;
+		}
+		const color = KIND_COLORS[properties.kind] ?? KIND_COLORS.TEMPORARY;
+		return { color, weight: 2, fillColor: color, fillOpacity: 0.2, dashArray: null };
+	}
+
+	/** "18:30" today, otherwise "09.11 18:30" (local time). */
+	function formatTime(iso) {
+		const date = new Date(iso);
+		const time = date.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
+		if (date.toDateString() === new Date().toDateString()) {
+			return time;
+		}
+		return `${date.toLocaleDateString('tr-TR', { day: '2-digit', month: '2-digit' })} ${time}`;
+	}
+
+	function zoneLabel(properties) {
+		if (properties.kind === 'PERMANENT') {
+			return `\u{1F512} ${properties.name}`;
+		}
+		if (properties.kind === 'TEMPORARY' && properties.validUntil) {
+			return `${properties.name} · bitiş ${formatTime(properties.validUntil)}`;
+		}
+		return properties.name;
+	}
+
+	/** Why a zone is (not) effective, for its panel. */
+	function zoneState(properties) {
+		const now = Date.now();
+		if (!properties.active) {
+			return 'Pasif: alarm üretmez';
+		}
+		if (properties.validFrom && Date.parse(properties.validFrom) > now) {
+			return `Başlamadı: ${formatTime(properties.validFrom)} itibarıyla etkin`;
+		}
+		if (properties.validUntil && Date.parse(properties.validUntil) <= now) {
+			return `Süresi doldu: ${formatTime(properties.validUntil)}`;
+		}
+		return properties.effective ? 'Etkin: alarm üretir' : 'Etkin değil';
+	}
+
+	/** A datetime-local value (local time, no zone) as an ISO instant; empty -> null. */
+	function localToIso(value) {
+		return value ? new Date(value).toISOString() : null;
 	}
 
 	/**
@@ -100,14 +165,14 @@ window.OtonomGeofences = (() => {
 		}
 
 		function createPolygon(feature) {
-			const { id, name, active } = feature.properties;
+			const { id, kind, effective } = feature.properties;
 			const rings = feature.geometry.coordinates.map((ring) => ring.map(([lon, lat]) => [lat, lon]));
-			const polygon = L.polygon(rings, { ...(active ? ACTIVE_STYLE : PASSIVE_STYLE), pane: 'geofences' })
+			const polygon = L.polygon(rings, { ...zoneStyle(feature.properties), pane: 'geofences' })
 				.addTo(zoneLayer);
-			polygon.bindTooltip(name, {
+			polygon.bindTooltip(zoneLabel(feature.properties), {
 				permanent: true,
 				direction: 'center',
-				className: `geofence-label${active ? '' : ' passive'}`,
+				className: `geofence-label kind-${String(kind).toLowerCase()}${effective ? '' : ' passive'}`,
 			});
 			polygon.on('click', (event) => {
 				// While drawing or picking a GOTO target the click belongs to the map.
@@ -157,17 +222,33 @@ window.OtonomGeofences = (() => {
 
 		function zonePanelContent() {
 			const { feature } = zones.get(zonePanel.id);
-			const { name, active } = feature.properties;
+			const { name, active, kind, source, validFrom, validUntil, effective } = feature.properties;
 			const panel = zonePanel;
 			const root = document.createElement('div');
 			root.className = 'geofence-panel';
 
 			const title = document.createElement('h3');
-			title.textContent = name;
+			title.textContent = kind === 'PERMANENT' ? `\u{1F512} ${name}` : name;
+			const meta = document.createElement('div');
+			meta.className = 'geofence-meta';
+			meta.textContent = `${KIND_LABELS[kind] ?? kind} · ${source === 'OSM' ? 'OpenStreetMap' : 'Operatör'}`;
 			const state = document.createElement('div');
-			state.className = `geofence-state ${active ? 'active' : 'passive'}`;
-			state.textContent = active ? 'Aktif: alarm üretir' : 'Pasif: alarm üretmez';
-			root.append(title, state);
+			state.className = `geofence-state ${effective ? 'active' : 'passive'}`;
+			state.textContent = zoneState(feature.properties);
+			root.append(title, meta, state);
+			if (validFrom || validUntil) {
+				const range = document.createElement('div');
+				range.className = 'geofence-meta';
+				range.textContent = `${validFrom ? formatTime(validFrom) : '…'} – ${validUntil ? formatTime(validUntil) : 'süresiz'}`;
+				root.append(range);
+			}
+			if (kind === 'PERMANENT') {
+				const note = document.createElement('div');
+				note.className = 'geofence-meta';
+				note.textContent = 'Kalıcı bölge; değiştirilemez ve silinemez.';
+				root.append(note);
+				return root;
+			}
 
 			const actions = document.createElement('div');
 			actions.className = 'geofence-actions';
@@ -260,6 +341,9 @@ window.OtonomGeofences = (() => {
 		let drawHintEl;
 		let drawFormEl;
 		let nameInputEl;
+		let kindSelectEl;
+		let fromInputEl;
+		let untilInputEl;
 		let saveButtonEl;
 		let drawErrorEl;
 
@@ -269,8 +353,22 @@ window.OtonomGeofences = (() => {
 				<button type="button" class="geofence-draw">Yasak bölge çiz</button>
 				<div class="geofence-hint" hidden></div>
 				<form class="geofence-form" hidden>
-					<label>Bölge adı
-						<input type="text" class="geofence-name" maxlength="${NAME_MAX_LENGTH}" required>
+					<div class="geofence-name-row">
+						<label>Bölge adı
+							<input type="text" class="geofence-name" maxlength="${NAME_MAX_LENGTH}" required>
+						</label>
+						<label>Tür
+							<select class="geofence-kind">
+								<option value="TEMPORARY" selected>Geçici</option>
+								<option value="MISSION">Görev</option>
+							</select>
+						</label>
+					</div>
+					<label>Başlangıç (boş: hemen)
+						<input type="datetime-local" class="geofence-from">
+					</label>
+					<label>Bitiş (boş: süresiz)
+						<input type="datetime-local" class="geofence-until">
 					</label>
 					<div class="geofence-form-actions">
 						<button type="submit" class="geofence-save">Kaydet</button>
@@ -284,6 +382,9 @@ window.OtonomGeofences = (() => {
 			drawHintEl = container.querySelector('.geofence-hint');
 			drawFormEl = container.querySelector('.geofence-form');
 			nameInputEl = container.querySelector('.geofence-name');
+			kindSelectEl = container.querySelector('.geofence-kind');
+			fromInputEl = container.querySelector('.geofence-from');
+			untilInputEl = container.querySelector('.geofence-until');
 			saveButtonEl = container.querySelector('.geofence-save');
 			drawErrorEl = drawFormEl.querySelector('.geofence-error');
 
@@ -354,6 +455,9 @@ window.OtonomGeofences = (() => {
 			drawFormEl.hidden = true;
 			drawErrorEl.hidden = true;
 			nameInputEl.value = '';
+			kindSelectEl.value = 'TEMPORARY';
+			fromInputEl.value = '';
+			untilInputEl.value = '';
 		}
 
 		function updateHint() {
@@ -422,7 +526,9 @@ window.OtonomGeofences = (() => {
 			drawing = 'naming';
 			draftLayer.removeLayer(draftLine);
 			draftLayer.removeLayer(rubberBand);
-			draftPolygon = L.polygon(corners, { ...ACTIVE_STYLE, dashArray: '4 6', interactive: false })
+			draftPolygon = L.polygon(corners, {
+				color: DRAFT_COLOR, weight: 2, fillColor: DRAFT_COLOR, fillOpacity: 0.2, dashArray: '4 6', interactive: false,
+			})
 				.addTo(draftLayer);
 			map.getContainer().classList.remove('drawing-geofence');
 			if (doubleClickZoomWasOn) {
@@ -450,6 +556,13 @@ window.OtonomGeofences = (() => {
 				return [round7(w.lng), round7(w.lat)];
 			});
 			ring.push([...ring[0]]);
+			const validFrom = localToIso(fromInputEl.value);
+			const validUntil = localToIso(untilInputEl.value);
+			if (validFrom && validUntil && Date.parse(validUntil) <= Date.parse(validFrom)) {
+				drawErrorEl.textContent = 'Bitiş, başlangıçtan sonra olmalı.';
+				drawErrorEl.hidden = false;
+				return;
+			}
 			saving = true;
 			saveButtonEl.disabled = true;
 			drawErrorEl.hidden = true;
@@ -457,7 +570,13 @@ window.OtonomGeofences = (() => {
 				await request('/api/geofences', {
 					method: 'POST',
 					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({ name, polygon: { type: 'Polygon', coordinates: [ring] } }),
+					body: JSON.stringify({
+						name,
+						kind: kindSelectEl.value,
+						validFrom,
+						validUntil,
+						polygon: { type: 'Polygon', coordinates: [ring] },
+					}),
 				});
 				cancelDrawing();
 				load();
@@ -468,6 +587,51 @@ window.OtonomGeofences = (() => {
 				drawErrorEl.hidden = false;
 			}
 		}
+
+		// --- Coordinate box (right click) ---------------------------------------------------
+
+		// Leaflet suppresses the browser's own menu on the map once it has a contextmenu listener.
+		map.on('contextmenu', (event) => {
+			const latLng = event.latlng.wrap();
+			const text = `${latLng.lat.toFixed(6)}, ${latLng.lng.toFixed(6)}`;
+			const box = document.createElement('button');
+			box.type = 'button';
+			box.className = 'coordinate-box';
+			box.title = 'Panoya kopyalamak için tıklayın';
+			box.innerHTML = '<span class="coordinate-text"></span><span class="coordinate-hint">Kopyala</span>';
+			box.querySelector('.coordinate-text').textContent = text;
+			box.addEventListener('click', (clickEvent) => {
+				L.DomEvent.stopPropagation(clickEvent);
+				const hint = box.querySelector('.coordinate-hint');
+				copyText(text).then(
+					() => { hint.textContent = 'Kopyalandı'; },
+					() => { hint.textContent = 'Kopyalanamadı'; });
+			});
+			L.popup({ className: 'coordinate-popup', closeButton: false, offset: [0, -4] })
+				.setLatLng(event.latlng)
+				.setContent(box)
+				.openOn(map);
+		});
+
+		/** The Clipboard API needs a secure context (https or localhost); otherwise the old way. */
+		function copyText(text) {
+			if (navigator.clipboard?.writeText) {
+				return navigator.clipboard.writeText(text);
+			}
+			return new Promise((resolve, reject) => {
+				const area = document.createElement('textarea');
+				area.value = text;
+				area.style.position = 'fixed';
+				area.style.opacity = '0';
+				document.body.append(area);
+				area.select();
+				const ok = document.execCommand('copy');
+				area.remove();
+				(ok ? resolve : reject)();
+			});
+		}
+
+		map.attributionControl?.addAttribution(OSM_ATTRIBUTION);
 
 		document.addEventListener('keydown', (event) => {
 			if (event.key !== 'Escape') {

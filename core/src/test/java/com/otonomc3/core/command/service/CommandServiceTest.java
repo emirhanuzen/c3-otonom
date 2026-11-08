@@ -41,6 +41,8 @@ import com.otonomc3.core.drone.service.LinkStatus;
 import com.otonomc3.core.telemetry.dto.TelemetryMessageDto;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
@@ -173,6 +175,62 @@ class CommandServiceTest {
 				.isInstanceOf(DroneNotOnlineException.class)
 				.extracting("linkStatus").isEqualTo(LinkStatus.STALE);
 		verify(repository, never()).save(any());
+	}
+
+	// --- on the ground ---------------------------------------------------------------
+
+	private static final Map<String, Object> GOTO_PARAMS = Map.of("lat", 38.6063, "lon", 39.2914, "alt", 120);
+
+	@ParameterizedTest
+	@EnumSource(value = CommandType.class, names = { "GOTO", "LOITER", "RESUME_MISSION" })
+	void flightCommandToDisarmedDroneIsAConflict(CommandType type) throws Exception {
+		when(liveStateService.find(1)).thenReturn(Optional.of(state(1, false, 100.0)));
+
+		assertThatThrownBy(() -> service(false).issue(1, type, type == CommandType.GOTO ? GOTO_PARAMS : null))
+				.isInstanceOf(DroneOnGroundException.class)
+				.hasMessage("İHA yerde, önce kalkış yapılmalı")
+				.extracting("armed", "altRel").containsExactly(false, 100.0);
+		verify(repository, never()).save(any());
+		verify(publisher, never()).publish(any());
+	}
+
+	@ParameterizedTest
+	@EnumSource(value = CommandType.class, names = { "GOTO", "LOITER", "RESUME_MISSION" })
+	void flightCommandBelowTenMetresIsAConflict(CommandType type) {
+		when(liveStateService.find(1)).thenReturn(Optional.of(state(1, true, 9.9)));
+
+		assertThatThrownBy(() -> service(false).issue(1, type, type == CommandType.GOTO ? GOTO_PARAMS : null))
+				.isInstanceOf(DroneOnGroundException.class);
+		verify(repository, never()).save(any());
+	}
+
+	@Test
+	void flightCommandAtTenMetresWhileArmedIsSent() throws Exception {
+		when(liveStateService.find(1)).thenReturn(Optional.of(state(1, true, 10.0)));
+
+		assertThat(service(false).issue(1, CommandType.LOITER, null).status()).isEqualTo(CommandStatus.PENDING);
+		verify(publisher).publish(any());
+	}
+
+	@Test
+	void flightCommandWithUnknownArmedStateAndAltitudeIsSent() throws Exception {
+		// state(1, ONLINE) has no status and no position.
+		assertThat(service(false).issue(1, CommandType.GOTO, GOTO_PARAMS).status()).isEqualTo(CommandStatus.PENDING);
+	}
+
+	@Test
+	void rtlIsSentToADroneOnTheGround() throws Exception {
+		when(liveStateService.find(1)).thenReturn(Optional.of(state(1, false, 0.0)));
+
+		assertThat(service(false).issue(1, CommandType.RTL, null).status()).isEqualTo(CommandStatus.PENDING);
+	}
+
+	@ParameterizedTest
+	@EnumSource(value = CommandType.class, names = { "FAULT_BATTERY_DRAIN", "FAULT_LOW_ALTITUDE", "FAULT_RESET" })
+	void simFaultsAreSentToADroneOnTheGround(CommandType type) throws Exception {
+		when(liveStateService.find(1)).thenReturn(Optional.of(state(1, false, 0.0)));
+
+		assertThat(service(true).issue(1, type, null).status()).isEqualTo(CommandStatus.PENDING);
 	}
 
 	// --- validation ------------------------------------------------------------------
@@ -325,6 +383,14 @@ class CommandServiceTest {
 
 	private static CommandResultMessageDto result(UUID commandId, String status, String detail, Instant completedAt) {
 		return new CommandResultMessageDto(1, commandId, 1, status, detail, completedAt);
+	}
+
+	/** ONLINE, with the given armed state and relative altitude. */
+	private static DroneLiveState state(int droneId, Boolean armed, Double altRel) {
+		TelemetryMessageDto message = new TelemetryMessageDto(2, UUID.randomUUID(), droneId, 1L, T0,
+				new TelemetryMessageDto.Position(38.6, 39.3, 990.0, altRel, 90.0), null, null, null,
+				new TelemetryMessageDto.Status("GUIDED", armed));
+		return new DroneLiveState(message, T0, Duration.ZERO, LinkStatus.ONLINE);
 	}
 
 	private static DroneLiveState state(int droneId, LinkStatus linkStatus) {

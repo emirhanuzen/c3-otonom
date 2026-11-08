@@ -1,6 +1,10 @@
 package com.otonomc3.core.geofence.service;
 
 import java.sql.PreparedStatement;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
+import java.time.Clock;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
@@ -18,7 +22,9 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
 /**
- * Checks the ONLINE drones with a known position against the active no-fly zones.
+ * Checks the ONLINE drones with a known position against the no-fly zones that
+ * are effective now (active and inside their validFrom/validUntil window, by the
+ * application Clock).
  * The alarm engine calls {@link #check} once per evaluation, before the rules; the
  * geofence rules then read that evaluation's result with {@link #statusOf}.
  *
@@ -37,7 +43,10 @@ public class GeofenceChecker {
 	public static final double MIN_PREDICTION_SPEED = 3.0;
 
 	private static final String SQL = """
-			WITH drone AS (
+			WITH params AS (
+			    SELECT CAST(? AS timestamptz) AS at
+			),
+			drone AS (
 			    SELECT u.id,
 			           CAST(ST_SetSRID(ST_MakePoint(u.lon, u.lat), 4326) AS geography) AS point,
 			           u.heading,
@@ -58,21 +67,26 @@ public class GeofenceChecker {
 			       ST_Intersects(g.area, t.point) AS inside,
 			       COALESCE(ST_Intersects(g.area, t.path), false) AS predicted
 			FROM track t
+			CROSS JOIN params p
 			JOIN geofence g
 			  ON g.active
+			 AND (g.valid_from IS NULL OR g.valid_from <= p.at)
+			 AND (g.valid_until IS NULL OR g.valid_until > p.at)
 			 AND (ST_Intersects(g.area, t.point) OR ST_Intersects(g.area, t.path))
 			ORDER BY t.id, g.id
 			""";
 
 	private final JdbcTemplate jdbcTemplate;
+	private final Clock clock;
 	private final double lookaheadSeconds;
 
 	/** The last check's result; null when it failed. Only used from the alarm engine's thread. */
 	private Map<Integer, GeofenceStatus> current = Map.of();
 	private boolean failing;
 
-	public GeofenceChecker(JdbcTemplate jdbcTemplate, AlarmProperties properties) {
+	public GeofenceChecker(JdbcTemplate jdbcTemplate, Clock clock, AlarmProperties properties) {
 		this.jdbcTemplate = jdbcTemplate;
+		this.clock = clock;
 		this.lookaheadSeconds = properties.geofenceLookahead().toMillis() / 1000.0;
 	}
 
@@ -84,7 +98,7 @@ public class GeofenceChecker {
 	 */
 	public boolean check(List<DroneLiveState> states) {
 		try {
-			current = query(states);
+			current = query(states, clock.instant());
 			if (failing) {
 				log.info("Geofence check works again");
 				failing = false;
@@ -112,11 +126,11 @@ public class GeofenceChecker {
 	}
 
 	/**
-	 * Runs the query. Drones that are not ONLINE or have no valid position are left
-	 * out; every other drone is in the result, with {@link GeofenceStatus#NONE} when
-	 * it touches no active zone.
+	 * Runs the query against the zones effective at {@code at}. Drones that are not
+	 * ONLINE or have no valid position are left out; every other drone is in the
+	 * result, with {@link GeofenceStatus#NONE} when it touches no effective zone.
 	 */
-	public Map<Integer, GeofenceStatus> query(List<DroneLiveState> states) {
+	public Map<Integer, GeofenceStatus> query(List<DroneLiveState> states, Instant at) {
 		List<Integer> ids = new ArrayList<>();
 		List<Double> lons = new ArrayList<>();
 		List<Double> lats = new ArrayList<>();
@@ -145,13 +159,14 @@ public class GeofenceChecker {
 		Map<Integer, Set<String>> predicted = new HashMap<>();
 		jdbcTemplate.query(connection -> {
 			PreparedStatement statement = connection.prepareStatement(SQL);
-			statement.setArray(1, connection.createArrayOf("integer", ids.toArray()));
-			statement.setArray(2, connection.createArrayOf("float8", lons.toArray()));
-			statement.setArray(3, connection.createArrayOf("float8", lats.toArray()));
-			statement.setArray(4, connection.createArrayOf("float8", headings.toArray()));
-			statement.setArray(5, connection.createArrayOf("float8", speeds.toArray()));
-			statement.setDouble(6, MIN_PREDICTION_SPEED);
-			statement.setDouble(7, lookaheadSeconds);
+			statement.setObject(1, OffsetDateTime.ofInstant(at, ZoneOffset.UTC));
+			statement.setArray(2, connection.createArrayOf("integer", ids.toArray()));
+			statement.setArray(3, connection.createArrayOf("float8", lons.toArray()));
+			statement.setArray(4, connection.createArrayOf("float8", lats.toArray()));
+			statement.setArray(5, connection.createArrayOf("float8", headings.toArray()));
+			statement.setArray(6, connection.createArrayOf("float8", speeds.toArray()));
+			statement.setDouble(7, MIN_PREDICTION_SPEED);
+			statement.setDouble(8, lookaheadSeconds);
 			return statement;
 		}, row -> {
 			int id = row.getInt("id");

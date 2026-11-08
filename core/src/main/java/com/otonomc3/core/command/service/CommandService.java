@@ -23,6 +23,7 @@ import com.otonomc3.core.drone.service.DroneLiveState;
 import com.otonomc3.core.drone.service.DroneLiveStateService;
 import com.otonomc3.core.drone.service.DroneNotFoundException;
 import com.otonomc3.core.drone.service.LinkStatus;
+import com.otonomc3.core.telemetry.dto.TelemetryMessageDto;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Limit;
 import org.springframework.messaging.simp.SimpMessageSendingOperations;
@@ -85,6 +86,8 @@ public class CommandService {
 	 * @throws SimDisabledException     for a FAULT_* type while simulation is disabled
 	 * @throws DroneNotFoundException   when no live state is known for the drone
 	 * @throws DroneNotOnlineException  when the drone's link is not ONLINE
+	 * @throws DroneOnGroundException   for GOTO, LOITER or RESUME_MISSION while the drone's latest
+	 *                                  telemetry says it is disarmed or below 10 m relative altitude
 	 */
 	public CommandDto issue(int droneId, CommandType type, Map<String, Object> rawParams) {
 		Map<String, Object> params = CommandValidator.validate(type, rawParams);
@@ -94,6 +97,9 @@ public class CommandService {
 		DroneLiveState state = liveStateService.find(droneId).orElseThrow(() -> new DroneNotFoundException(droneId));
 		if (state.linkStatus() != LinkStatus.ONLINE) {
 			throw new DroneNotOnlineException(droneId, state.linkStatus());
+		}
+		if (type.requiresAirborne()) {
+			checkAirborne(state);
 		}
 
 		CommandEntity entity = new CommandEntity();
@@ -116,6 +122,19 @@ public class CommandService {
 		}
 		log.info("Command {} drone={} type={} published", entity.getId(), droneId, type);
 		return pending;
+	}
+
+	/**
+	 * Only a known value can refuse the command: an unknown (null) armed state or
+	 * altitude lets it through, like the alarm rules, which never trigger on unknown values.
+	 */
+	private static void checkAirborne(DroneLiveState state) {
+		TelemetryMessageDto message = state.message();
+		Boolean armed = message.status() == null ? null : message.status().armed();
+		Double altRel = message.position() == null ? null : message.position().altRel();
+		if (Boolean.FALSE.equals(armed) || (altRel != null && altRel < CommandValidator.MIN_AIRBORNE_ALT_REL)) {
+			throw new DroneOnGroundException(state.droneId(), armed, altRel);
+		}
 	}
 
 	/** Applies a result from the edge adapter; unknown commands and invalid statuses are logged and skipped. */

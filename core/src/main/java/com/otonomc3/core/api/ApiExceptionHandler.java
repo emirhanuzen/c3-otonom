@@ -3,12 +3,16 @@ package com.otonomc3.core.api;
 import com.otonomc3.core.alarm.service.AlarmNotFoundException;
 import com.otonomc3.core.alarm.service.InvalidAlarmQueryException;
 import com.otonomc3.core.command.service.CommandNotFoundException;
+import com.otonomc3.core.command.service.CommandValidator;
 import com.otonomc3.core.command.service.DroneNotOnlineException;
+import com.otonomc3.core.command.service.DroneOnGroundException;
 import com.otonomc3.core.command.service.InvalidCommandException;
 import com.otonomc3.core.command.service.SimDisabledException;
 import com.otonomc3.core.drone.service.DroneNotFoundException;
+import com.otonomc3.core.geofence.service.GeofenceImportDisabledException;
 import com.otonomc3.core.geofence.service.GeofenceNotFoundException;
 import com.otonomc3.core.geofence.service.InvalidGeofenceException;
+import com.otonomc3.core.geofence.service.PermanentGeofenceException;
 import com.otonomc3.core.telemetry.service.InvalidTelemetryQueryException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
@@ -72,6 +76,17 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
 		return problem;
 	}
 
+	@ExceptionHandler(DroneOnGroundException.class)
+	ProblemDetail handleDroneOnGround(DroneOnGroundException e) {
+		ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, e.getMessage());
+		problem.setTitle("Drone on ground");
+		problem.setProperty("droneId", e.getDroneId());
+		problem.setProperty("armed", e.getArmed());
+		problem.setProperty("altRel", e.getAltRel());
+		problem.setProperty("minAltRel", CommandValidator.MIN_AIRBORNE_ALT_REL);
+		return problem;
+	}
+
 	@ExceptionHandler(CommandNotFoundException.class)
 	ProblemDetail handleCommandNotFound(CommandNotFoundException e) {
 		ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, e.getMessage());
@@ -99,6 +114,21 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
 		ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, e.getMessage());
 		problem.setTitle("Geofence not found");
 		problem.setProperty("geofenceId", e.getGeofenceId());
+		return problem;
+	}
+
+	@ExceptionHandler(PermanentGeofenceException.class)
+	ProblemDetail handlePermanentGeofence(PermanentGeofenceException e) {
+		ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.FORBIDDEN, e.getMessage());
+		problem.setTitle("Geofence is permanent");
+		problem.setProperty("geofenceId", e.getGeofenceId());
+		return problem;
+	}
+
+	@ExceptionHandler(GeofenceImportDisabledException.class)
+	ProblemDetail handleGeofenceImportDisabled(GeofenceImportDisabledException e) {
+		ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.FORBIDDEN, e.getMessage());
+		problem.setTitle("Simulation disabled");
 		return problem;
 	}
 

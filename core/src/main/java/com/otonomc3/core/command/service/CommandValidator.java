@@ -14,6 +14,8 @@ public final class CommandValidator {
 	public static final double GOTO_MAX_ALT = 500;
 	public static final double LINK_DROP_MIN_SECONDS = 1;
 	public static final double LINK_DROP_MAX_SECONDS = 60;
+	/** A drone below this relative altitude (m) counts as on the ground for the types that require flight. */
+	public static final double MIN_AIRBORNE_ALT_REL = 10;
 
 	private CommandValidator() {
 	}

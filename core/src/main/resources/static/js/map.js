@@ -118,6 +118,14 @@
 	/** A PENDING toast normally turns final within 12 s (the core's timeout); this is a safety net. */
 	const TOAST_PENDING_MS = 20000;
 	const COMMAND_STATUS_MEMORY = 200;
+	/**
+	 * Commands the core refuses (409) while the drone is on the ground, i.e. disarmed
+	 * or below MIN_AIRBORNE_ALT_REL_M (CommandType.requiresAirborne and
+	 * CommandValidator.MIN_AIRBORNE_ALT_REL). RTL and the FAULT_* commands are exempt.
+	 */
+	const AIRBORNE_COMMANDS = new Set(['GOTO', 'LOITER', 'RESUME_MISSION']);
+	const MIN_AIRBORNE_ALT_REL_M = 10;
+	const ON_GROUND_REASON = 'İHA yerde, önce kalkış yapılmalı';
 
 	let selectedDroneId = null;
 	/** The command waiting for a GOTO point or for the confirm box: { type, droneId, params?, marker? }. */
@@ -378,25 +386,47 @@
 		if (!entry) {
 			commandTargetEl.textContent = 'İHA seçilmedi (haritada veya listede bir İHA\'ya tıklayın)';
 		} else if (entry.state.linkStatus === 'ONLINE') {
-			commandTargetEl.textContent = label(selectedDroneId);
+			commandTargetEl.textContent = isOnGround(entry.state)
+				? `${label(selectedDroneId)} · ${ON_GROUND_REASON}`
+				: label(selectedDroneId);
 		} else {
 			const link = LINK_LABELS[entry.state.linkStatus] ?? entry.state.linkStatus;
 			commandTargetEl.textContent = `${label(selectedDroneId)} · ${link}, komut gönderilemez`;
 		}
 		const online = isOnline(selectedDroneId);
 		commandButtons.forEach((button) => {
-			button.disabled = !online || pendingCommand !== null;
+			const grounded = online && isGroundBlocked(selectedDroneId, button.dataset.command);
+			button.disabled = !online || pendingCommand !== null || grounded;
+			// Shown on hover; the same reason is also in the target line above the buttons.
+			button.title = grounded ? ON_GROUND_REASON : '';
+			button.classList.toggle('grounded', grounded);
 		});
-		confirmYesEl.disabled = !(pendingCommand && isOnline(pendingCommand.droneId));
-		// A drone that drops offline while its GOTO point is being picked cannot take it.
-		if (pickingTarget && !online) {
+		const pendingBlocked = pendingCommand !== null
+			&& isGroundBlocked(pendingCommand.droneId, pendingCommand.type);
+		confirmYesEl.disabled = !(pendingCommand && isOnline(pendingCommand.droneId)) || pendingBlocked;
+		// A drone that drops offline or lands while its GOTO point is being picked or
+		// confirmed cannot take it.
+		if ((pickingTarget && !online) || pendingBlocked) {
 			cancelPendingCommand();
 		}
 	}
 
+	/**
+	 * Like the core, only a known value blocks: armed=false or a relative altitude
+	 * below MIN_AIRBORNE_ALT_REL_M. Unknown values let the command through.
+	 */
+	function isOnGround(state) {
+		const altRel = state?.position?.altRel;
+		return state?.status?.armed === false || (altRel != null && altRel < MIN_AIRBORNE_ALT_REL_M);
+	}
+
+	function isGroundBlocked(droneId, type) {
+		return AIRBORNE_COMMANDS.has(type) && isOnGround(drones.get(droneId)?.state);
+	}
+
 	function onCommandButton(type) {
 		const droneId = selectedDroneId;
-		if (!isOnline(droneId) || pendingCommand) {
+		if (!isOnline(droneId) || pendingCommand || isGroundBlocked(droneId, type)) {
 			return;
 		}
 		if (type === 'GOTO') {
@@ -449,7 +479,7 @@
 
 	function confirmPendingCommand() {
 		const command = pendingCommand;
-		if (!command || !isOnline(command.droneId)) {
+		if (!command || !isOnline(command.droneId) || isGroundBlocked(command.droneId, command.type)) {
 			return;
 		}
 		pendingCommand = null;

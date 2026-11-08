@@ -1,5 +1,6 @@
 package com.otonomc3.core.geofence.persistence;
 
+import java.time.Instant;
 import java.util.List;
 
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -10,13 +11,18 @@ import org.springframework.transaction.annotation.Transactional;
 
 public interface GeofenceRepository extends JpaRepository<GeofenceEntity, Long> {
 
+	/**
+	 * The condition of an effective zone in SQL, for the alias {@code g} and a
+	 * timestamptz parameter {@code :at}. GeofenceEntity.isEffective is the same rule in Java.
+	 */
+	String EFFECTIVE = "g.active AND (g.valid_from IS NULL OR g.valid_from <= :at)"
+			+ " AND (g.valid_until IS NULL OR g.valid_until > :at)";
+
 	List<GeofenceEntity> findAllByOrderByIdAsc();
 
-	/** @return 0 when the geofence does not exist */
-	@Transactional
-	@Modifying
-	@Query("UPDATE GeofenceEntity g SET g.active = :active WHERE g.id = :id")
-	int updateActive(@Param("id") long id, @Param("active") boolean active);
+	/** Ids of the zones effective at {@code at}, ordered. */
+	@Query(value = "SELECT g.id FROM geofence g WHERE " + EFFECTIVE + " ORDER BY g.id", nativeQuery = true)
+	List<Long> findEffectiveIds(@Param("at") Instant at);
 
 	/** @return 0 when the geofence does not exist */
 	@Transactional
