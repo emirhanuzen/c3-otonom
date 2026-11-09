@@ -44,9 +44,12 @@ public class CommandController {
 					+ "durumundaki komut döner (yayınlanamadıysa FAILED). Sonucu GET /api/commands/{commandId} veya "
 					+ "/topic/commands ile izlenir. FAULT_* tipleri yalnızca simülasyon açıkken (otonom.sim.enabled) "
 					+ "kabul edilir. GOTO, LOITER ve RESUME_MISSION, İHA'nın son telemetrisinde armed=false veya göreli "
-					+ "irtifa 10 m'nin altındaysa gönderilmez (409); RTL ve FAULT_* bu kontrolden muaftır. TAKEOFF, İHA "
+					+ "irtifa 10 m'nin altındaysa gönderilmez (409); RTL, FENCE_UPLOAD ve FAULT_* bu kontrolden muaftır. TAKEOFF, İHA "
 					+ "armed=true ve göreli irtifa >= 10 m ise ya da konumu etkin bir yasak bölgedeyse; DISARM, göreli "
-					+ "irtifa >= 5 m veya yer hızı >= 3 m/s ise gönderilmez (409).")
+					+ "irtifa >= 5 m veya yer hızı >= 3 m/s ise gönderilmez (409). GOTO gönderilmeden hemen önce yasak bölgelere "
+					+ "göre planlanır (bkz. POST /api/drones/{droneId}/route/preview): düz çizgi bir bölgeye (150 m "
+					+ "payıyla) değiyorsa yerine bölgeleri dolaşan bir ROUTE komutu gönderilir ve o döner; güvenli rota "
+					+ "yoksa 409.")
 	@ApiResponse(responseCode = "202", description = "Komut kaydedildi ve gönderildi (veya gönderilemedi: FAILED)",
 			content = @Content(schema = @Schema(implementation = CommandDto.class)))
 	@ApiResponse(responseCode = "400",
@@ -64,7 +67,9 @@ public class CommandController {
 			description = "İHA'nın bağlantısı ONLINE değil (komut ona ulaşmaz) ya da GOTO/LOITER/RESUME_MISSION için "
 					+ "İHA yerde: armed=false veya göreli irtifa 10 m'nin altında (\"İHA yerde, önce kalkış yapılmalı\"); "
 					+ "TAKEOFF için İHA havada (\"İHA zaten havada\") ya da yasak bölgede (\"Kalkış noktası yasak "
-					+ "bölgede: <bölge adları>\"); DISARM için İHA havada (\"İHA havadayken motor kapatılamaz\")",
+					+ "bölgede: <bölge adları>\"); DISARM için İHA havada (\"İHA havadayken motor kapatılamaz\"); GOTO için "
+					+ "rota yok (\"Hedef yasak bölgeye çok yakın veya içinde\", \"İHA yasak bölge içinde, önce Eve dön\", "
+					+ "\"Güvenli rota bulunamadı\")",
 			content = @Content(mediaType = "application/problem+json",
 					schema = @Schema(implementation = ProblemDetail.class)))
 	@PostMapping("/api/drones/{droneId}/commands")

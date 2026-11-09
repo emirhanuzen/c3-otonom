@@ -41,6 +41,19 @@ class TelemetryMessageDtoTest {
 	}
 
 	@Test
+	void readsTheOnboardFenceFieldsOfTheStatus() {
+		String json = """
+				{"schemaVersion":2,"droneId":1,"sessionId":"6f1c2a4e-9b1d-4c3e-8a7f-2d5e6b7c8d9e","seq":0,
+				 "timestamp":"2026-10-24T12:34:56.789Z",
+				 "status":{"mode":"RTL","armed":true,"fenceBreached":true,"fenceBreachCount":2}}
+				""";
+
+		TelemetryMessageDto message = jsonMapper.readValue(json, TelemetryMessageDto.class);
+
+		assertThat(message.status()).isEqualTo(new TelemetryMessageDto.Status("RTL", true, true, 2));
+	}
+
+	@Test
 	void missingAndNullSectionsBecomeNull() {
 		String json = """
 				{"schemaVersion":2,"droneId":1,"sessionId":"6f1c2a4e-9b1d-4c3e-8a7f-2d5e6b7c8d9e","seq":0,

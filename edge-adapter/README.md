@@ -70,7 +70,7 @@ command_channel  ->  command_schema  ->  command_executor  ->  mavlink_reader ba
 
 - `command.py`: komut ve sonuç alan modeli, parametre doğrulama; dış kütüphane import etmez.
 - `command_schema.py`: komut/sonuç JSON'u (sözleşme: `docs/contracts/command-v1.md`).
-- `command_executor.py`: komutu MAVLink mesajlarına çevirir, `COMMAND_ACK` / `PARAM_VALUE` cevaplarını bekleyen komutla eşleştirir, zaman aşımını izler; reddedilen kalkışın sebebi için `PreArm:` ile başlayan `STATUSTEXT` mesajlarını toplar.
+- `command_executor.py`: komutu MAVLink mesajlarına çevirir, `COMMAND_ACK` / `PARAM_VALUE` / `MISSION_REQUEST(_INT)` / `MISSION_ACK` cevaplarını bekleyen komutla eşleştirir, zaman aşımını izler; reddedilen kalkışın sebebi için `PreArm:` ile başlayan `STATUSTEXT` mesajlarını toplar. `FENCE_UPLOAD` yasak bölgeleri mission protokolüyle (`MAV_MISSION_TYPE_FENCE`) otopilota yükler; `ROUTE` bölgeleri dolaşan rotayı görev olarak yükler (önceki görevin yerine geçer) ve AUTO'ya alır.
 - `command_channel.py`: ayrı bir RabbitMQ bağlantısıyla `edge.commands` kuyruğunu tüketir ve sonuçları yayınlar.
 
 Thread yoktur: komutlar da ana döngüde işlenir ve İHA'nın okunduğu bağlantının üzerinden gönderilir.
@@ -119,13 +119,14 @@ Anlık görüntüler önce bellekteki sınırlı bir tampona (outbox) yazılır 
   "velocity": {"groundSpeed": 22.1, "airSpeed": 21.8, "climbRate": 0.3},
   "battery": {"percent": 97, "voltage": 12.58},
   "gps": {"fixType": 3, "satellites": 10},
-  "status": {"mode": "AUTO", "armed": true}
+  "status": {"mode": "AUTO", "armed": true, "fenceBreached": false, "fenceBreachCount": 0}
 }
 ```
 
 - Birimler: metre, m/s, derece, volt.
 - Henüz gelmemiş ya da otopilotun "bilinmiyor" olarak bildirdiği alanlar `null` olur.
 - `fixType`, MAVLink `GPS_FIX_TYPE` değeridir (0 GPS yok, 1 fix yok, 2 2D, 3 3D, ...).
+- `fenceBreached` / `fenceBreachCount`, otopilotun kendi fence'inin (`FENCE_UPLOAD` ile yüklenen bölgeler) MAVLink `FENCE_STATUS` mesajından gelir; otopilot fence etkin değilken bu mesajı göndermez, o zaman ikisi de `null` olur. Adaptör mesajı ilk heartbeat'te `MAV_CMD_SET_MESSAGE_INTERVAL` ile saniyede bir ister.
 - `sessionId`, adaptör her başladığında bir kez üretilen rastgele UUID'dir; adaptör çalıştığı sürece değişmez.
 - `seq` her adaptör oturumunda her İHA için 0'dan başlar ve mesaj üretilirken atanır; tampon taşması ya da unroutable yüzünden kaybolan mesajlar tüketicide `seq` boşluğu olarak görünür.
 

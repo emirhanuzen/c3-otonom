@@ -16,6 +16,7 @@ import com.otonomc3.core.geofence.dto.GeofenceFeatureDto;
 import com.otonomc3.core.geofence.persistence.GeofenceEntity;
 import com.otonomc3.core.geofence.persistence.GeofenceRepository;
 import org.locationtech.jts.geom.Polygon;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.messaging.simp.SimpMessageSendingOperations;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
@@ -30,7 +31,8 @@ import org.springframework.stereotype.Service;
  * deleting one here throws {@link PermanentGeofenceException}.
  *
  * <p>Every repository call runs in its own transaction, so the collection is only
- * sent after the change is committed.
+ * sent after the change is committed. Every send is also published as a
+ * {@link GeofencesChangedEvent}, so the onboard fences (FenceSyncService) follow.
  */
 @Service
 public class GeofenceService {
@@ -41,14 +43,17 @@ public class GeofenceService {
 
 	private final GeofenceRepository repository;
 	private final SimpMessageSendingOperations messagingTemplate;
+	private final ApplicationEventPublisher eventPublisher;
 	private final Clock clock;
 
 	/** Ids of the effective zones as last sent; null before the first check. Guarded by this. */
 	private List<Long> lastEffectiveIds;
 
-	public GeofenceService(GeofenceRepository repository, SimpMessageSendingOperations messagingTemplate, Clock clock) {
+	public GeofenceService(GeofenceRepository repository, SimpMessageSendingOperations messagingTemplate,
+			ApplicationEventPublisher eventPublisher, Clock clock) {
 		this.repository = repository;
 		this.messagingTemplate = messagingTemplate;
+		this.eventPublisher = eventPublisher;
 		this.clock = clock;
 	}
 
@@ -152,6 +157,7 @@ public class GeofenceService {
 				.map(GeofenceFeatureDto::id)
 				.toList();
 		messagingTemplate.convertAndSend(TOPIC, collection);
+		eventPublisher.publishEvent(new GeofencesChangedEvent());
 	}
 
 	/** Sends the collection when the set of effective zones changed since it was last sent. */

@@ -19,6 +19,9 @@ public enum AlarmType {
 	GEOFENCE_VIOLATION,
 
 	/** The drone is outside every active no-fly zone, but its current track enters one within the lookahead. */
-	GEOFENCE_PREDICTED
+	GEOFENCE_PREDICTED,
+
+	/** The autopilot reports a breach of its onboard fence (telemetry status.fenceBreached); its fence action runs. */
+	FENCE_BREACH
 
 }

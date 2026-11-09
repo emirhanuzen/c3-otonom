@@ -65,6 +65,38 @@ def test_disarm_takes_no_params():
     assert command.params == {}
 
 
+SQUARE = [[38.60, 39.30], [38.60, 39.31], [38.61, 39.31], [38.61, 39.30]]
+
+
+def test_fence_upload_params_are_normalized():
+    command = parse_command(body(type="FENCE_UPLOAD", params={
+        "version": "a1b2", "action": "RTL", "polygons": [SQUARE, [[38, 39], [38, 40], [39, 40]]]}))
+    assert command.type is CommandType.FENCE_UPLOAD
+    assert command.params == {
+        "version": "a1b2",
+        "action": "RTL",
+        "polygons": [[(38.60, 39.30), (38.60, 39.31), (38.61, 39.31), (38.61, 39.30)],
+                     [(38.0, 39.0), (38.0, 40.0), (39.0, 40.0)]],
+    }
+
+
+def test_fence_upload_closed_ring_is_opened():
+    command = parse_command(body(type="FENCE_UPLOAD", params={
+        "version": "v", "action": "REPORT", "polygons": [SQUARE + [SQUARE[0]]]}))
+    assert len(command.params["polygons"][0]) == 4
+
+
+def test_fence_upload_with_no_polygons():
+    command = parse_command(body(type="FENCE_UPLOAD", params={"version": "v", "action": "RTL", "polygons": []}))
+    assert command.params["polygons"] == []
+
+
+def test_route_params_are_normalized():
+    command = parse_command(body(type="ROUTE", params={"waypoints": [[38.61, 39.28, 120], [38.6, 39.29, 100.5]]}))
+    assert command.type is CommandType.ROUTE
+    assert command.params == {"waypoints": [(38.61, 39.28, 120.0), (38.6, 39.29, 100.5)]}
+
+
 def test_extra_params_are_ignored():
     command = parse_command(body(type="FAULT_GPS_LOSS", params={"enabled": True, "note": "x"}))
     assert command.params == {"enabled": True}
@@ -87,6 +119,22 @@ def test_extra_params_are_ignored():
     ("FAULT_LINK_DROP", {"seconds": 0}),
     ("FAULT_LINK_DROP", {"seconds": 61}),
     ("RTL", []),                                               # params not an object
+    ("ROUTE", {}),
+    ("ROUTE", {"waypoints": []}),
+    ("ROUTE", {"waypoints": [[38.6, 39.3]]}),                     # alt missing
+    ("ROUTE", {"waypoints": [[38.6, 39.3, -1]]}),
+    ("ROUTE", {"waypoints": [[91, 39.3, 100]]}),
+    ("ROUTE", {"waypoints": [[38.6, 39.3, True]]}),
+    ("ROUTE", {"waypoints": [[38.6, 39.3, 100]] * 101}),
+    ("FENCE_UPLOAD", {"action": "RTL", "polygons": []}),       # version missing
+    ("FENCE_UPLOAD", {"version": "", "action": "RTL", "polygons": []}),
+    ("FENCE_UPLOAD", {"version": "v", "action": "LAND", "polygons": []}),
+    ("FENCE_UPLOAD", {"version": "v", "action": "RTL"}),       # polygons missing
+    ("FENCE_UPLOAD", {"version": "v", "action": "RTL", "polygons": [SQUARE[:2]]}),
+    ("FENCE_UPLOAD", {"version": "v", "action": "RTL", "polygons": [[[38.6, 39.3, 0]] * 3]}),
+    ("FENCE_UPLOAD", {"version": "v", "action": "RTL", "polygons": [[[91, 39.3]] + SQUARE[1:]]}),
+    ("FENCE_UPLOAD", {"version": "v", "action": "RTL", "polygons": [[["38.6", 39.3]] + SQUARE[1:]]}),
+    ("FENCE_UPLOAD", {"version": "v", "action": "RTL", "polygons": [SQUARE] * 126}),  # 504 vertices
 ])
 def test_invalid_params_are_rejected_with_ids(command_type, params):
     with pytest.raises(InvalidCommand) as error:

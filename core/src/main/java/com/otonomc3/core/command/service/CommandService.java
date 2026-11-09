@@ -3,6 +3,7 @@ package com.otonomc3.core.command.service;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
@@ -25,8 +26,12 @@ import com.otonomc3.core.drone.service.DroneNotFoundException;
 import com.otonomc3.core.drone.service.LinkStatus;
 import com.otonomc3.core.geofence.service.GeofenceChecker;
 import com.otonomc3.core.geofence.service.GeofenceStatus;
+import com.otonomc3.core.route.service.RouteBlockedException;
+import com.otonomc3.core.route.service.RoutePlan;
+import com.otonomc3.core.route.service.RouteService;
 import com.otonomc3.core.telemetry.dto.TelemetryMessageDto;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.Limit;
 import org.springframework.messaging.simp.SimpMessageSendingOperations;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -43,7 +48,9 @@ import tools.jackson.databind.json.JsonMapper;
  * arrives after that still replaces the TIMEOUT, because it tells what the
  * aircraft actually did; any other final state is never changed.
  *
- * <p>Every state change is sent to /topic/commands.
+ * <p>Every state change is sent to /topic/commands; a command that reaches a final
+ * state is also published as a {@link CommandCompletedEvent} (FenceSyncService follows
+ * its FENCE_UPLOAD commands this way).
  */
 @Slf4j
 @Service
@@ -62,20 +69,25 @@ public class CommandService {
 	private final CommandPublisher publisher;
 	private final DroneLiveStateService liveStateService;
 	private final GeofenceChecker geofenceChecker;
+	private final RouteService routeService;
 	private final SimpMessageSendingOperations messagingTemplate;
+	private final ApplicationEventPublisher eventPublisher;
 	private final JsonMapper jsonMapper;
 	private final Clock clock;
 	private final Duration resultTimeout;
 	private final boolean simEnabled;
 
 	public CommandService(CommandRepository repository, CommandPublisher publisher,
-			DroneLiveStateService liveStateService, GeofenceChecker geofenceChecker,
-			SimpMessageSendingOperations messagingTemplate, JsonMapper jsonMapper, Clock clock, CommandProperties properties, SimProperties simProperties) {
+			DroneLiveStateService liveStateService, GeofenceChecker geofenceChecker, RouteService routeService,
+			SimpMessageSendingOperations messagingTemplate, ApplicationEventPublisher eventPublisher,
+			JsonMapper jsonMapper, Clock clock, CommandProperties properties, SimProperties simProperties) {
 		this.repository = repository;
 		this.publisher = publisher;
 		this.liveStateService = liveStateService;
 		this.geofenceChecker = geofenceChecker;
+		this.routeService = routeService;
 		this.messagingTemplate = messagingTemplate;
+		this.eventPublisher = eventPublisher;
 		this.jsonMapper = jsonMapper;
 		this.clock = clock;
 		this.resultTimeout = properties.resultTimeout();
@@ -92,11 +104,15 @@ public class CommandService {
 	 * @throws DroneNotOnlineException  when the drone's link is not ONLINE
 	 * @throws DroneOnGroundException   for GOTO, LOITER or RESUME_MISSION while the drone's latest
 	 *                                  telemetry says it is disarmed or below 10 m relative altitude
+	 *                                  (RTL, FENCE_UPLOAD and the FAULT_* types are exempt)
 	 * @throws DroneInFlightException   for TAKEOFF while armed at or above 10 m relative altitude, or for
 	 *                                  DISARM at or above 5 m relative altitude or 3 m/s ground speed
 	 * @throws TakeoffInNoFlyZoneException for TAKEOFF while the drone is inside an effective no-fly zone
+	 * @throws RouteBlockedException    for GOTO when no safe route to the target exists; a GOTO whose
+	 *                                  straight line crosses a zone is sent as a ROUTE around it
 	 */
-	public CommandDto issue(int droneId, CommandType type, Map<String, Object> rawParams) {
+	public CommandDto issue(int droneId, CommandType requestedType, Map<String, Object> rawParams) {
+		CommandType type = requestedType;
 		Map<String, Object> params = CommandValidator.validate(type, rawParams);
 		if (type.isSimFault() && !simEnabled) {
 			throw new SimDisabledException(type);
@@ -113,6 +129,16 @@ public class CommandService {
 		}
 		if (type == CommandType.DISARM) {
 			checkDisarm(state);
+		}
+		if (type == CommandType.GOTO) {
+			// Planned now, right before sending: the zones may have changed since a preview.
+			RoutePlan route = routeService.plan(state, (Double) params.get("lat"), (Double) params.get("lon"));
+			if (!route.direct()) {
+				log.info("GOTO of drone {} goes around {} as a ROUTE of {} waypoint(s), {} m", droneId,
+						route.avoidedZones(), route.waypoints().size(), Math.round(route.distanceM()));
+				type = CommandType.ROUTE;
+				params = CommandValidator.validate(type, Map.of("waypoints", withAltitude(route, (Double) params.get("alt"))));
+			}
 		}
 
 		CommandEntity entity = new CommandEntity();
@@ -135,6 +161,14 @@ public class CommandService {
 		}
 		log.info("Command {} drone={} type={} published", entity.getId(), droneId, type);
 		return pending;
+	}
+
+	private static List<List<Double>> withAltitude(RoutePlan route, double alt) {
+		List<List<Double>> waypoints = new ArrayList<>(route.waypoints().size());
+		for (List<Double> point : route.waypoints()) {
+			waypoints.add(List.of(point.get(0), point.get(1), alt));
+		}
+		return waypoints;
 	}
 
 	/**
@@ -248,7 +282,16 @@ public class CommandService {
 		if (repository.complete(id, status, detail, completedAt, from) == 0) {
 			return null;
 		}
-		return repository.findById(id).map(this::toDto).map(this::broadcast).orElse(null);
+		CommandDto completed = repository.findById(id).map(this::toDto).map(this::broadcast).orElse(null);
+		if (completed != null) {
+			try {
+				eventPublisher.publishEvent(new CommandCompletedEvent(completed));
+			} catch (RuntimeException e) {
+				// A failing listener must not undo or hide the stored result.
+				log.error("A listener failed on the result of command {}", id, e);
+			}
+		}
+		return completed;
 	}
 
 	private CommandDto broadcast(CommandDto command) {

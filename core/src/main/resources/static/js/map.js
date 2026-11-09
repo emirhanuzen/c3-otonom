@@ -10,10 +10,19 @@
  *
  * Clicking a drone (icon or list) selects it for the command buttons of the
  * panel. Command results arrive on /topic/commands and are shown as toasts.
+ * "Noktaya git" asks POST /api/drones/{id}/route/preview for the route around the
+ * no-fly zones first and shows it dashed; the core may send the GOTO as a ROUTE. The
+ * route then stays on the map, thin, until the drone reaches the target or gets
+ * another command.
  * Shared command helpers are in commands.js.
  *
  * No-fly zones are drawn, created and edited by geofences.js; this file loads
  * them and forwards the /topic/geofences updates.
+ *
+ * The zones uploaded to each autopilot (onboard fences) come from
+ * GET /api/drones/{id}/fence and /topic/fence: their state is a line of the drone's
+ * popup, and the "Otopilot sınırlarını göster" switch draws the selected drone's
+ * simplified polygons.
  */
 (() => {
 	const CENTER = [38.6069, 39.2914]; // Elazığ Airport
@@ -60,6 +69,7 @@
 		LOW_ALTITUDE: 'Düşük irtifa',
 		GEOFENCE_VIOLATION: 'Yasak bölge ihlali',
 		GEOFENCE_PREDICTED: 'Yasak bölgeye yaklaşıyor',
+		FENCE_BREACH: 'Otopilot koruması devrede',
 	};
 	const ALARM_SEVERITY_LABELS = {
 		CRITICAL: 'Kritik',
@@ -100,6 +110,15 @@
 	});
 	let trailDurationMs = DEFAULT_TRAIL_DURATION_MS;
 
+	// --- Onboard fence state -------------------------------------------------------
+
+	/** droneId -> FenceStatusDto of GET /api/drones/{id}/fence and /topic/fence. */
+	const fenceStatuses = new Map();
+	/** The selected drone's onboard polygons; thin, dashed and dark, so they read apart from the zones. */
+	const fenceLayer = L.layerGroup();
+	const FENCE_STYLE = { color: '#1f2933', weight: 1.5, opacity: 0.9, dashArray: '4 4', fill: false };
+	let fenceVisible = false;
+
 	/** alarmId -> alarm (AlarmDto); active alarms only. */
 	const alarms = new Map();
 	/**
@@ -125,7 +144,7 @@
 	 * or below MIN_AIRBORNE_ALT_REL_M (CommandType.requiresAirborne and
 	 * CommandValidator.MIN_AIRBORNE_ALT_REL). RTL and the FAULT_* commands are exempt.
 	 */
-	const AIRBORNE_COMMANDS = new Set(['GOTO', 'LOITER', 'RESUME_MISSION']);
+	const AIRBORNE_COMMANDS = new Set(['GOTO', 'ROUTE', 'LOITER', 'RESUME_MISSION']);
 	const MIN_AIRBORNE_ALT_REL_M = 10;
 	const ON_GROUND_REASON = 'İHA yerde, önce kalkış yapılmalı';
 	/** TAKEOFF limits and default, as in CommandValidator. */
@@ -149,7 +168,9 @@
 	/** The command waiting for a GOTO point or for the confirm box: { type, droneId, params?, marker? }. */
 	let pendingCommand = null;
 	let pickingTarget = false;
-	/** droneId -> { marker, commandId } of the drone's last GOTO target. */
+	/** A drone this close (m) to its GOTO target has reached it: target and route leave the map. */
+	const ARRIVAL_RADIUS_M = 100;
+	/** droneId -> { marker, line, commandId } of the drone's last GOTO target and its route. */
 	const gotoTargets = new Map();
 	// Elements of the panel's command section, set by setupCommandControls() while
 	// the panel is built, which happens before the Commands section below runs.
@@ -217,6 +238,14 @@
 					<span class="switch-track" aria-hidden="true"></span>
 				</label>
 				<button type="button" class="trail-clear">İzleri temizle</button>
+			</div>
+			<div class="fence-controls">
+				<h2>Otopilot</h2>
+				<label class="control-row switch" title="Seçili İHA'nın otopilotuna yüklenen sadeleştirilmiş yasak bölgeler">
+					<span>Otopilot sınırlarını göster</span>
+					<input type="checkbox" class="fence-visible" role="switch">
+					<span class="switch-track" aria-hidden="true"></span>
+				</label>
 			</div>`;
 		L.DomEvent.disableClickPropagation(container);
 		L.DomEvent.disableScrollPropagation(container);
@@ -235,6 +264,10 @@
 			}
 		});
 		container.querySelector('.trail-clear').addEventListener('click', clearAllTrails);
+		container.querySelector('.fence-visible').addEventListener('change', (event) => {
+			fenceVisible = event.target.checked;
+			renderFenceLayer();
+		});
 		setupCommandControls(container);
 		return container;
 	};
@@ -295,6 +328,7 @@
 			entry = { segments: [], marker: null };
 			entry.listItem = createListItem(state.droneId);
 			drones.set(state.droneId, entry);
+			loadFenceStatus(state.droneId);
 		}
 		entry.state = state;
 
@@ -314,6 +348,10 @@
 		updateListItem(entry);
 		if (state.droneId === selectedDroneId) {
 			updateCommandControls();
+		}
+		const target = gotoTargets.get(state.droneId);
+		if (target && latLng && map.distance(latLng, target.marker.getLatLng()) < ARRIVAL_RADIUS_M) {
+			removeGotoTarget(state.droneId);
 		}
 	}
 
@@ -364,11 +402,67 @@
 			['Yer hızı', withUnit(formatNumber(state.velocity?.groundSpeed, 1), 'm/s')],
 			['Batarya', state.battery?.percent == null ? null : `%${state.battery.percent}`],
 			['Uydu sayısı', state.gps?.satellites],
+			['Otopilot bölgeleri', fenceText(fenceStatuses.get(state.droneId))],
 		];
 		const body = rows
 			.map(([name, value]) => `<tr><th>${name}</th><td>${escapeHtml(value ?? '—')}</td></tr>`)
 			.join('');
 		return `<div class="drone-popup"><h3>${label(state.droneId)}</h3><table>${body}</table></div>`;
+	}
+
+	// --- Onboard fences -------------------------------------------------------------
+
+	function fenceText(fence) {
+		switch (fence?.status) {
+			case 'SYNCED':
+				// An empty list was uploaded: the autopilot's fence is off.
+				return fence.zoneCount === 0
+					? 'Yakında bölge yok'
+					: `Güncel (${fence.zoneCount} bölge, ${fence.vertexCount} köşe)`;
+			case 'PENDING':
+				return 'Yükleniyor';
+			case 'FAILED':
+				return `Hata: ${fence.lastError ?? 'bilinmiyor'}`;
+			case 'DISABLED':
+				return 'Kapalı';
+			default:
+				return null;
+		}
+	}
+
+	function loadFenceStatus(droneId) {
+		fetch(`/api/drones/${droneId}/fence`)
+			.then((response) => (response.ok ? response.json() : null))
+			.then((fence) => {
+				if (fence) {
+					handleFenceStatus(fence);
+				}
+			})
+			.catch((error) => console.error(`${label(droneId)} otopilot bölgeleri alınamadı:`, error));
+	}
+
+	function handleFenceStatus(fence) {
+		fenceStatuses.set(fence.droneId, fence);
+		const entry = drones.get(fence.droneId);
+		if (entry?.marker?.isPopupOpen()) {
+			entry.marker.getPopup().update();
+		}
+		if (fence.droneId === selectedDroneId) {
+			renderFenceLayer();
+		}
+	}
+
+	/** Draws the selected drone's onboard polygons while the switch is on. */
+	function renderFenceLayer() {
+		fenceLayer.clearLayers();
+		const polygons = fenceStatuses.get(selectedDroneId)?.polygons;
+		if (!fenceVisible || !polygons?.features?.length) {
+			map.removeLayer(fenceLayer);
+			return;
+		}
+		// Not interactive: a click goes through to the map (GOTO target) or the zone below.
+		L.geoJSON(polygons, { style: FENCE_STYLE, interactive: false }).addTo(fenceLayer);
+		fenceLayer.addTo(map);
 	}
 
 	// --- Commands ------------------------------------------------------------------
@@ -412,6 +506,7 @@
 			}
 		});
 		updateCommandControls();
+		renderFenceLayer();
 	}
 
 	function isOnline(droneId) {
@@ -444,7 +539,9 @@
 		});
 		const pendingBlocked = pendingCommand !== null
 			&& blockReason(pendingCommand.droneId, pendingCommand.type) !== null;
-		confirmYesEl.disabled = !(pendingCommand && isOnline(pendingCommand.droneId)) || pendingBlocked;
+		// A GOTO waits for its route preview and cannot go when the preview found no route.
+		const routeNotReady = pendingCommand?.type === 'GOTO' && !pendingCommand.route;
+		confirmYesEl.disabled = !(pendingCommand && isOnline(pendingCommand.droneId)) || pendingBlocked || routeNotReady;
 		// A drone that drops offline, or whose state no longer allows the command (it
 		// landed during a GOTO, took off during a TAKEOFF), cannot take it.
 		if ((pickingTarget && !online) || pendingBlocked) {
@@ -566,9 +663,62 @@
 		const { droneId } = pendingCommand;
 		pendingCommand.params = { lat: round7(latLng.lat), lon: round7(latLng.lng), alt: GOTO_DEFAULT_ALT_M };
 		pendingCommand.marker = createTargetMarker(droneId, latLng);
-		askConfirm(pendingCommand, `${label(droneId)} bu noktaya gitsin mi? `
-			+ `${formatNumber(latLng.lat, 5)}, ${formatNumber(latLng.lng, 5)} · ${GOTO_DEFAULT_ALT_M} m`);
+		askConfirm(pendingCommand, 'Rota hesaplanıyor…', 'Git');
+		previewRoute(pendingCommand);
 	});
+
+	/** Asks for the route of a GOTO waiting in the confirm box, then shows it there and on the map. */
+	async function previewRoute(command) {
+		const { droneId, params } = command;
+		let route;
+		try {
+			route = await Commands.previewRoute(droneId, params);
+		} catch (error) {
+			if (pendingCommand === command) {
+				confirmTextEl.textContent = `${label(droneId)}: ${error.message}`;
+			}
+			return;
+		}
+		if (pendingCommand !== command) {
+			return; // cancelled meanwhile
+		}
+		command.route = route;
+		command.previewLayer = drawRoute(droneId, route.waypoints, true);
+		confirmTextEl.textContent = routeSummary(route);
+		updateCommandControls();
+		confirmYesEl.focus();
+	}
+
+	/** "Doğrudan rota, 1,8 km" or "Rota 2 bölgeyi dolaşıyor (X, Y), 3,2 km, ~2 dk 20 sn". */
+	function routeSummary(route) {
+		const distance = formatDistance(route.distanceM);
+		if (route.direct) {
+			return `Doğrudan rota, ${distance}`;
+		}
+		const zones = route.avoidedZones;
+		return `Rota ${zones.length} bölgeyi dolaşıyor (${zones.join(', ')}), ${distance}, ${formatEta(route.etaS)}`;
+	}
+
+	/**
+	 * The route from the drone's current position through waypoints ([lat, lon, ...]): dashed with
+	 * its turning points while previewed, thin and solid once flown. Not interactive, so a click
+	 * still reaches the map.
+	 */
+	function drawRoute(droneId, waypoints, preview) {
+		const start = positionOf(drones.get(droneId)?.state);
+		const points = waypoints.map((point) => L.latLng(point[0], point[1]));
+		const color = droneColor(droneId);
+		const layer = L.layerGroup();
+		L.polyline(start ? [start, ...points] : points, preview
+			? { color, weight: 3, opacity: 0.9, dashArray: '6 6', interactive: false }
+			: { color, weight: 1.5, opacity: 0.7, interactive: false }).addTo(layer);
+		if (preview) {
+			points.slice(0, -1).forEach((point) => L.circleMarker(point, {
+				radius: 4, color, weight: 2, fillColor: '#fff', fillOpacity: 1, interactive: false,
+			}).addTo(layer));
+		}
+		return layer.addTo(map);
+	}
 
 	document.addEventListener('keydown', (event) => {
 		if (event.key === 'Escape' && pendingCommand) {
@@ -592,6 +742,7 @@
 		}
 		pendingCommand = null;
 		confirmEl.hidden = true;
+		command.previewLayer?.remove();
 		updateCommandControls();
 		sendCommand(command.droneId, command.type, command.params, command.marker);
 	}
@@ -601,6 +752,7 @@
 			return;
 		}
 		pendingCommand?.marker?.remove();
+		pendingCommand?.previewLayer?.remove();
 		pendingCommand = null;
 		pickingTarget = false;
 		commandHintEl.hidden = true;
@@ -613,7 +765,9 @@
 		try {
 			const command = await Commands.send(droneId, type, params);
 			if (targetMarker) {
-				setGotoTarget(droneId, targetMarker, command.id);
+				// The core planned the route again; a ROUTE answer carries the waypoints it sends.
+				const waypoints = command.type === 'ROUTE' ? command.params.waypoints : [[params.lat, params.lon]];
+				setGotoTarget(droneId, targetMarker, drawRoute(droneId, waypoints, false), command.id);
 			}
 			handleCommandEvent(command);
 		} catch (error) {
@@ -636,9 +790,9 @@
 	}
 
 	/** One target per drone: a new GOTO replaces the previous one. */
-	function setGotoTarget(droneId, marker, commandId) {
-		gotoTargets.get(droneId)?.marker.remove();
-		gotoTargets.set(droneId, { marker, commandId });
+	function setGotoTarget(droneId, marker, line, commandId) {
+		removeGotoTarget(droneId);
+		gotoTargets.set(droneId, { marker, line, commandId });
 		// The result may already have arrived over STOMP before the POST answered.
 		const status = commandStatuses.get(commandId);
 		if (status) {
@@ -653,9 +807,17 @@
 		}
 		for (const [droneId, target] of gotoTargets) {
 			if (target.commandId === commandId) {
-				target.marker.remove();
-				gotoTargets.delete(droneId);
+				removeGotoTarget(droneId);
 			}
+		}
+	}
+
+	function removeGotoTarget(droneId) {
+		const target = gotoTargets.get(droneId);
+		if (target) {
+			target.marker.remove();
+			target.line?.remove();
+			gotoTargets.delete(droneId);
 		}
 	}
 
@@ -684,7 +846,14 @@
 		if (commandStatuses.size > COMMAND_STATUS_MEMORY) {
 			commandStatuses.delete(commandStatuses.keys().next().value);
 		}
-		showCommandToast(command);
+		// The core sends FENCE_UPLOAD by itself, often; its state is in the drone's popup instead.
+		if (command.type !== 'FENCE_UPLOAD') {
+			showCommandToast(command);
+			// Another command for the drone ends the route it was flying.
+			if (gotoTargets.has(command.droneId) && gotoTargets.get(command.droneId).commandId !== command.id) {
+				removeGotoTarget(command.droneId);
+			}
+		}
 		removeFailedGotoTarget(command.id, command.status);
 	}
 
@@ -1053,6 +1222,19 @@
 		});
 	}
 
+	/** "850 m" or "1,8 km". */
+	function formatDistance(metres) {
+		return metres < 1000 ? `${Math.round(metres)} m` : `${formatNumber(metres / 1000, 1)} km`;
+	}
+
+	/** "~45 sn" or "~2 dk 20 sn". */
+	function formatEta(seconds) {
+		const total = Math.max(0, Math.round(seconds));
+		const minutes = Math.floor(total / 60);
+		const rest = total % 60;
+		return minutes === 0 ? `~${rest} sn` : `~${minutes} dk ${rest} sn`;
+	}
+
 	/** For example "45 sn", "3 dk 05 sn", "1 sa 02 dk". */
 	function formatDuration(ms) {
 		const totalSeconds = Math.floor(ms / 1000);
@@ -1119,9 +1301,11 @@
 			client.subscribe('/topic/alarms', (message) => handleAlarmEvent(JSON.parse(message.body)));
 			client.subscribe('/topic/commands', (message) => handleCommandEvent(JSON.parse(message.body)));
 			client.subscribe('/topic/geofences', (message) => geofences.setCollection(JSON.parse(message.body)));
+			client.subscribe('/topic/fence', (message) => handleFenceStatus(JSON.parse(message.body)));
 			// Events sent while disconnected were missed, so the lists are reloaded on every (re)connect.
 			loadAlarms();
 			geofences.load();
+			drones.forEach((entry, droneId) => loadFenceStatus(droneId));
 		},
 		onWebSocketClose: () => setConnection('disconnected'),
 		onStompError: (frame) => {

@@ -45,6 +45,8 @@ public final class AlarmTestData {
 		private boolean hasStatus = true;
 		private String mode = "AUTO";
 		private Boolean armed = true;
+		private Boolean fenceBreached;
+		private Integer fenceBreachCount;
 
 		private StateBuilder(int droneId) {
 			this.droneId = droneId;
@@ -97,6 +99,13 @@ public final class AlarmTestData {
 			return this;
 		}
 
+		/** The onboard fence fields of the status (FENCE_STATUS); unknown (null) by default. */
+		public StateBuilder fence(Boolean breached, Integer breachCount) {
+			this.fenceBreached = breached;
+			this.fenceBreachCount = breachCount;
+			return this;
+		}
+
 		public StateBuilder noStatus() {
 			this.hasStatus = false;
 			return this;
@@ -108,7 +117,7 @@ public final class AlarmTestData {
 					null,
 					hasBattery ? new TelemetryMessageDto.Battery(batteryPercent, 15.8) : null,
 					hasGps ? new TelemetryMessageDto.Gps(fixType, satellites) : null,
-					hasStatus ? new TelemetryMessageDto.Status(mode, armed) : null);
+					hasStatus ? new TelemetryMessageDto.Status(mode, armed, fenceBreached, fenceBreachCount) : null);
 			return new DroneLiveState(message, T0, age, linkStatus);
 		}
 

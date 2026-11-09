@@ -44,6 +44,8 @@ class Gps:
 class Status:
     mode: str | None = None    # flight mode name, e.g. "AUTO"
     armed: bool | None = None
+    fence_breached: bool | None = None     # the autopilot's own fence is breached now (FENCE_STATUS)
+    fence_breach_count: int | None = None  # breaches the autopilot counted since it booted
 
 
 @dataclass(frozen=True)

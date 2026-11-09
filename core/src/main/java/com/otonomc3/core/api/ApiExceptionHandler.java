@@ -11,6 +11,7 @@ import com.otonomc3.core.command.service.InvalidCommandException;
 import com.otonomc3.core.command.service.SimDisabledException;
 import com.otonomc3.core.command.service.TakeoffInNoFlyZoneException;
 import com.otonomc3.core.drone.service.DroneNotFoundException;
+import com.otonomc3.core.route.service.RouteBlockedException;
 import com.otonomc3.core.geofence.service.GeofenceImportDisabledException;
 import com.otonomc3.core.geofence.service.GeofenceNotFoundException;
 import com.otonomc3.core.geofence.service.InvalidGeofenceException;
@@ -106,6 +107,15 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
 		ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, e.getMessage());
 		problem.setTitle("Takeoff in no-fly zone");
 		problem.setProperty("droneId", e.getDroneId());
+		problem.setProperty("zones", e.getZones());
+		return problem;
+	}
+
+	@ExceptionHandler(RouteBlockedException.class)
+	ProblemDetail handleRouteBlocked(RouteBlockedException e) {
+		ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, e.getMessage());
+		problem.setTitle("Route blocked");
+		problem.setProperty("reason", e.getReason().name());
 		problem.setProperty("zones", e.getZones());
 		return problem;
 	}

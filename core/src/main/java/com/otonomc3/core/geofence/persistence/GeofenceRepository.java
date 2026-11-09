@@ -24,6 +24,18 @@ public interface GeofenceRepository extends JpaRepository<GeofenceEntity, Long> 
 	@Query(value = "SELECT g.id FROM geofence g WHERE " + EFFECTIVE + " ORDER BY g.id", nativeQuery = true)
 	List<Long> findEffectiveIds(@Param("at") Instant at);
 
+	/**
+	 * The zones effective at {@code at} within {@code corridorM} metres (geography, on the spheroid)
+	 * of the geodesic segment from (startLat, startLon) to (targetLat, targetLon), ordered by id.
+	 */
+	@Query(value = "SELECT g.* FROM geofence g WHERE " + EFFECTIVE
+			+ " AND ST_DWithin(g.area, CAST(ST_MakeLine(ST_SetSRID(ST_MakePoint(:startLon, :startLat), 4326),"
+			+ " ST_SetSRID(ST_MakePoint(:targetLon, :targetLat), 4326)) AS geography), :corridor)"
+			+ " ORDER BY g.id", nativeQuery = true)
+	List<GeofenceEntity> findEffectiveAlong(@Param("startLat") double startLat, @Param("startLon") double startLon,
+			@Param("targetLat") double targetLat, @Param("targetLon") double targetLon,
+			@Param("corridor") double corridorM, @Param("at") Instant at);
+
 	/** @return 0 when the geofence does not exist */
 	@Transactional
 	@Modifying

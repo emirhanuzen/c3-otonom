@@ -18,8 +18,14 @@ class CommandType(enum.Enum):
     RESUME_MISSION = "RESUME_MISSION"            # flight mode AUTO
     LOITER = "LOITER"                            # flight mode LOITER
     GOTO = "GOTO"                                # params: lat, lon, alt (metres above home)
+    # params: waypoints ([[lat, lon, alt], ...], alt in metres above home, the last one is the
+    # target); uploaded as the mission (replacing the one on the aircraft) and flown in AUTO.
+    ROUTE = "ROUTE"
     TAKEOFF = "TAKEOFF"                          # params: alt (30..300 m above home, default 60)
     DISARM = "DISARM"                            # stop the motors; refused by the autopilot in flight
+    # params: version, action ("RTL" | "REPORT"), polygons ([[[lat, lon], ...], ...]);
+    # replaces the autopilot's exclusion fences and turns the polygon fence on.
+    FENCE_UPLOAD = "FENCE_UPLOAD"
     # Simulator faults; they only work against SITL, whose SIM_* parameters they change.
     FAULT_BATTERY_DRAIN = "FAULT_BATTERY_DRAIN"
     FAULT_GPS_LOSS = "FAULT_GPS_LOSS"            # params: enabled (true = GPS lost)
@@ -41,6 +47,11 @@ LINK_DROP_MAX_S = 60
 TAKEOFF_MIN_ALT_M = 30
 TAKEOFF_MAX_ALT_M = 300
 TAKEOFF_DEFAULT_ALT_M = 60
+ROUTE_MAX_WAYPOINTS = 100
+FENCE_ACTIONS = ("RTL", "REPORT")
+FENCE_MIN_VERTICES = 3          # per polygon
+FENCE_MAX_TOTAL_VERTICES = 500  # all polygons together: one fence item per vertex
+FENCE_VERSION_MAX_LENGTH = 64
 
 
 @dataclass(frozen=True)
@@ -92,6 +103,12 @@ def validate_params(command_type, params):
             raise InvalidParams(f"alt must be between {TAKEOFF_MIN_ALT_M} and {TAKEOFF_MAX_ALT_M}, was {alt}")
         return {"alt": alt}
 
+    if command_type is CommandType.FENCE_UPLOAD:
+        return _fence_upload(params)
+
+    if command_type is CommandType.ROUTE:
+        return _route(params)
+
     if command_type is CommandType.FAULT_GPS_LOSS:
         enabled = params.get("enabled")
         if not isinstance(enabled, bool):
@@ -106,6 +123,63 @@ def validate_params(command_type, params):
 
     # The other types take no params.
     return {}
+
+
+def _fence_upload(params):
+    version = params.get("version")
+    if not isinstance(version, str) or not version.strip() or len(version) > FENCE_VERSION_MAX_LENGTH:
+        raise InvalidParams(f"version (a non-empty string of at most {FENCE_VERSION_MAX_LENGTH} characters) "
+                            "is required")
+    action = params.get("action")
+    if action not in FENCE_ACTIONS:
+        raise InvalidParams(f"action must be one of {', '.join(FENCE_ACTIONS)}, was {action!r}")
+    polygons = params.get("polygons")
+    if not isinstance(polygons, list):
+        raise InvalidParams("polygons (a list of polygons, each a list of [lat, lon]) is required")
+    result = []
+    total = 0
+    for i, polygon in enumerate(polygons):
+        if not isinstance(polygon, list):
+            raise InvalidParams(f"polygons[{i}] must be a list of [lat, lon]")
+        vertices = [_vertex(vertex, f"polygons[{i}][{j}]") for j, vertex in enumerate(polygon)]
+        # A closed ring (last vertex = first) is accepted; the fence protocol wants it open.
+        if len(vertices) > 1 and vertices[0] == vertices[-1]:
+            vertices.pop()
+        if len(vertices) < FENCE_MIN_VERTICES:
+            raise InvalidParams(f"polygons[{i}] needs at least {FENCE_MIN_VERTICES} distinct vertices")
+        total += len(vertices)
+        result.append(vertices)
+    if total > FENCE_MAX_TOTAL_VERTICES:
+        raise InvalidParams(f"at most {FENCE_MAX_TOTAL_VERTICES} vertices in total, was {total}")
+    return {"version": version, "action": action, "polygons": result}
+
+
+def _route(params):
+    waypoints = params.get("waypoints")
+    if not isinstance(waypoints, list) or not 1 <= len(waypoints) <= ROUTE_MAX_WAYPOINTS:
+        raise InvalidParams(f"waypoints (1 to {ROUTE_MAX_WAYPOINTS} points [lat, lon, alt]) is required")
+    result = []
+    for i, point in enumerate(waypoints):
+        if (not isinstance(point, list) or len(point) != 3
+                or any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) for v in point)):
+            raise InvalidParams(f"waypoints[{i}] must be [lat, lon, alt]")
+        lat, lon, alt = (float(v) for v in point)
+        if not -90 <= lat <= 90 or not -180 <= lon <= 180:
+            raise InvalidParams(f"waypoints[{i}] is out of range: [{lat}, {lon}]")
+        if alt < 0:
+            raise InvalidParams(f"waypoints[{i}] alt must not be negative, was {alt}")
+        result.append((lat, lon, alt))
+    return {"waypoints": result}
+
+
+def _vertex(value, name):
+    if (not isinstance(value, list) or len(value) != 2
+            or any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) for v in value)):
+        raise InvalidParams(f"{name} must be [lat, lon]")
+    lat, lon = float(value[0]), float(value[1])
+    if not -90 <= lat <= 90 or not -180 <= lon <= 180:
+        raise InvalidParams(f"{name} is out of range: [{lat}, {lon}]")
+    return (lat, lon)
 
 
 def _number(params, name):

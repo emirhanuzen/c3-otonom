@@ -12,8 +12,17 @@ public enum CommandType {
 	/** Flight mode LOITER. */
 	LOITER(false, true),
 
-	/** Params: lat, lon, alt (metres above home). */
+	/**
+	 * Params: lat, lon, alt (metres above home). Planned around the no-fly zones right before it
+	 * is sent: when the straight line crosses one, a ROUTE is sent instead (see CommandService).
+	 */
 	GOTO(false, true),
+
+	/**
+	 * Params: waypoints ([[lat, lon, alt], ...], the last one is the target). Uploaded as the
+	 * drone's mission and flown in AUTO; replaces the mission that was on the drone.
+	 */
+	ROUTE(false, true),
 
 	/**
 	 * Params: alt (metres above home, 30..300, default 60). Only allowed on the ground and
@@ -23,6 +32,12 @@ public enum CommandType {
 
 	/** Stops the motors (no force). Only allowed while the drone stands still on the ground. */
 	DISARM(false, false),
+
+	/**
+	 * Params: version, action (RTL or REPORT), polygons ([[[lat, lon], ...], ...]). Replaces the
+	 * autopilot's onboard exclusion fences; sent by FenceSyncService, on the ground and in flight.
+	 */
+	FENCE_UPLOAD(false, false),
 
 	FAULT_BATTERY_DRAIN(true, false),
 

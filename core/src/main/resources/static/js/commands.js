@@ -11,8 +11,10 @@ window.OtonomCommands = (() => {
 		RESUME_MISSION: 'Göreve devam',
 		LOITER: 'Bekle',
 		GOTO: 'Noktaya git',
+		ROUTE: 'Rotayla git',
 		TAKEOFF: 'Kalkış',
 		DISARM: 'Motoru kapat',
+		FENCE_UPLOAD: 'Otopilot bölgeleri',
 		FAULT_BATTERY_DRAIN: 'Bataryayı boşalt',
 		FAULT_GPS_LOSS: 'GPS arızası',
 		FAULT_LOW_ALTITUDE: 'Alçak irtifa',
@@ -64,6 +66,33 @@ window.OtonomCommands = (() => {
 		return body;
 	}
 
+	/**
+	 * The route a GOTO to the target would fly now (POST /api/drones/{droneId}/route/preview).
+	 * Resolves with the RoutePreviewDto; rejects with a CommandError carrying the 409's reason.
+	 */
+	async function previewRoute(droneId, target) {
+		let response;
+		try {
+			response = await fetch(`/api/drones/${droneId}/route/preview`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(target),
+			});
+		} catch {
+			throw new CommandError('Sunucuya ulaşılamadı', 0);
+		}
+		let body = null;
+		try {
+			body = await response.json();
+		} catch {
+			// No JSON body; the HTTP status says enough.
+		}
+		if (!response.ok) {
+			throw new CommandError(body?.detail ?? `HTTP ${response.status}`, response.status);
+		}
+		return body;
+	}
+
 	/** pending (gray), accepted (green) or failed (red, for every other final status). */
 	function statusClass(status) {
 		if (status === 'PENDING') {
@@ -95,5 +124,7 @@ window.OtonomCommands = (() => {
 		return status !== 'PENDING';
 	}
 
-	return { TYPE_LABELS, STATUS_LABELS, CommandError, send, statusClass, typeLabel, statusLabel, isFinal };
+	return {
+		TYPE_LABELS, STATUS_LABELS, CommandError, send, previewRoute, statusClass, typeLabel, statusLabel, isFinal,
+	};
 })();

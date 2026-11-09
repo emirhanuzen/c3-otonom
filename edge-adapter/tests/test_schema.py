@@ -56,7 +56,7 @@ def test_values_are_rounded():
     assert snap["velocity"] == {"groundSpeed": 22.12, "airSpeed": 21.88, "climbRate": -0.33}
     assert snap["battery"] == {"percent": 97, "voltage": 12.59}
     assert snap["gps"] == {"fixType": 3, "satellites": 10}
-    assert snap["status"] == {"mode": "AUTO", "armed": True}
+    assert snap["status"] == {"mode": "AUTO", "armed": True, "fenceBreached": None, "fenceBreachCount": None}
 
 
 def test_unknown_values_are_null():
@@ -66,11 +66,17 @@ def test_unknown_values_are_null():
     assert snap["velocity"] == {"groundSpeed": None, "airSpeed": None, "climbRate": None}
     assert snap["battery"] == {"percent": None, "voltage": None}
     assert snap["gps"] == {"fixType": None, "satellites": None}
-    assert snap["status"] == {"mode": None, "armed": None}
+    assert snap["status"] == {"mode": None, "armed": None, "fenceBreached": None, "fenceBreachCount": None}
     # null in the JSON text itself, not just a missing key.
     assert b'"lat":null' in to_json(build_snapshot(DroneTelemetry(drone_id=7), SESSION_ID, 0, TIMESTAMP))
 
 
 def test_armed_false_is_not_null():
     snap = snapshot_of(DroneTelemetry(drone_id=1, status=Status(mode="MANUAL", armed=False)))
-    assert snap["status"] == {"mode": "MANUAL", "armed": False}
+    assert snap["status"] == {"mode": "MANUAL", "armed": False, "fenceBreached": None, "fenceBreachCount": None}
+
+
+def test_fence_status_fields():
+    snap = snapshot_of(DroneTelemetry(drone_id=1, status=Status(
+        mode="RTL", armed=True, fence_breached=True, fence_breach_count=2)))
+    assert snap["status"] == {"mode": "RTL", "armed": True, "fenceBreached": True, "fenceBreachCount": 2}

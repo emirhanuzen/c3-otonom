@@ -42,8 +42,19 @@ public record TelemetryMessageDto(
 	public record Gps(Integer fixType, Integer satellites) {
 	}
 
+	/**
+	 * @param fenceBreached    the autopilot's own (onboard) fence is breached now; from MAVLink FENCE_STATUS,
+	 *                         which only arrives while that fence is enabled
+	 * @param fenceBreachCount breaches the autopilot counted since it booted
+	 */
 	@JsonIgnoreProperties(ignoreUnknown = true)
-	public record Status(String mode, Boolean armed) {
+	public record Status(String mode, Boolean armed, Boolean fenceBreached, Integer fenceBreachCount) {
+
+		/** Without the onboard fence fields (unknown). */
+		public Status(String mode, Boolean armed) {
+			this(mode, armed, null, null);
+		}
+
 	}
 
 }

@@ -66,6 +66,8 @@ def build_snapshot(telemetry, session_id, seq, timestamp):
         "status": {
             "mode": telemetry.status.mode,
             "armed": telemetry.status.armed,
+            "fenceBreached": telemetry.status.fence_breached,
+            "fenceBreachCount": telemetry.status.fence_breach_count,
         },
     }
 

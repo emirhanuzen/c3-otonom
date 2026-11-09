@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyCollection;
+import static org.mockito.ArgumentMatchers.anyDouble;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
@@ -40,6 +41,9 @@ import com.otonomc3.core.drone.service.DroneNotFoundException;
 import com.otonomc3.core.drone.service.LinkStatus;
 import com.otonomc3.core.geofence.service.GeofenceChecker;
 import com.otonomc3.core.geofence.service.GeofenceStatus;
+import com.otonomc3.core.route.service.RouteBlockedException;
+import com.otonomc3.core.route.service.RoutePlan;
+import com.otonomc3.core.route.service.RouteService;
 import com.otonomc3.core.telemetry.dto.TelemetryMessageDto;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -49,6 +53,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.messaging.simp.SimpMessageSendingOperations;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -71,6 +76,12 @@ class CommandServiceTest {
 
 	@Mock
 	private GeofenceChecker geofenceChecker;
+
+	@Mock
+	private ApplicationEventPublisher eventPublisher;
+
+	@Mock
+	private RouteService routeService;
 
 	/** In-memory stand-in for the table, driven by the repository mock. */
 	private final Map<UUID, CommandEntity> table = new HashMap<>();
@@ -103,11 +114,14 @@ class CommandServiceTest {
 				.map(CommandEntity::getId)
 				.toList());
 		lenient().when(liveStateService.find(1)).thenReturn(Optional.of(state(1, LinkStatus.ONLINE)));
+		// A clear straight line unless a test says otherwise.
+		lenient().when(routeService.plan(any(), anyDouble(), anyDouble())).thenAnswer(invocation -> new RoutePlan(true,
+				List.of(List.of(invocation.<Double>getArgument(1), invocation.<Double>getArgument(2))), 1000, List.of()));
 	}
 
 	private CommandService service(boolean simEnabled) {
-		return new CommandService(repository, publisher, liveStateService, geofenceChecker, messagingTemplate,
-				JsonMapper.builder().build(), clock,
+		return new CommandService(repository, publisher, liveStateService, geofenceChecker, routeService, messagingTemplate,
+				eventPublisher, JsonMapper.builder().build(), clock,
 				new CommandProperties(Duration.ofSeconds(12), Duration.ofSeconds(5)), new SimProperties(simEnabled));
 	}
 
@@ -130,6 +144,96 @@ class CommandServiceTest {
 		assertThat(message.getValue().type()).isEqualTo(CommandType.GOTO);
 		assertThat(message.getValue().issuedAt()).isEqualTo(T0);
 		verify(messagingTemplate).convertAndSend(eq("/topic/commands"), eq(command));
+	}
+
+	@Test
+	void gotoWithAClearStraightLineStaysAGoto() throws Exception {
+		CommandDto command = service(false).issue(1, CommandType.GOTO, Map.of("lat", 38.61, "lon", 39.29, "alt", 120));
+
+		assertThat(command.type()).isEqualTo(CommandType.GOTO);
+		verify(routeService).plan(any(), eq(38.61), eq(39.29));
+	}
+
+	@Test
+	void gotoAcrossAZoneIsSentAsARouteWithTheGotoAltitude() throws Exception {
+		when(routeService.plan(any(), anyDouble(), anyDouble())).thenReturn(new RoutePlan(false,
+				List.of(List.of(38.605, 39.30), List.of(38.61, 39.29)), 2500, List.of("Kışla")));
+
+		CommandDto command = service(false).issue(1, CommandType.GOTO, Map.of("lat", 38.61, "lon", 39.29, "alt", 120));
+
+		assertThat(command.type()).isEqualTo(CommandType.ROUTE);
+		assertThat(command.params()).isEqualTo(Map.of("waypoints",
+				List.of(List.of(38.605, 39.30, 120.0), List.of(38.61, 39.29, 120.0))));
+		ArgumentCaptor<CommandMessageDto> message = ArgumentCaptor.forClass(CommandMessageDto.class);
+		verify(publisher).publish(message.capture());
+		assertThat(message.getValue().type()).isEqualTo(CommandType.ROUTE);
+	}
+
+	@Test
+	void gotoWithoutSafeRouteIsRefusedAndNotStored() throws Exception {
+		when(routeService.plan(any(), anyDouble(), anyDouble()))
+				.thenThrow(new RouteBlockedException(RouteBlockedException.Reason.NO_ROUTE, List.of()));
+
+		assertThatThrownBy(() -> service(false).issue(1, CommandType.GOTO, Map.of("lat", 38.61, "lon", 39.29, "alt", 120)))
+				.isInstanceOf(RouteBlockedException.class).hasMessage("Güvenli rota bulunamadı");
+		verify(publisher, never()).publish(any());
+		assertThat(table).isEmpty();
+	}
+
+	@Test
+	void routeParamsAreValidated() {
+		assertThatThrownBy(() -> service(false).issue(1, CommandType.ROUTE, Map.of("waypoints", List.of())))
+				.isInstanceOf(InvalidCommandException.class).hasMessageContaining("waypoints");
+		assertThatThrownBy(() -> service(false).issue(1, CommandType.ROUTE,
+				Map.of("waypoints", List.of(List.of(38.6, 39.3, 10)))))
+				.isInstanceOf(InvalidCommandException.class).hasMessageContaining("alt between 30 and 500");
+	}
+
+	@Test
+	void fenceUploadIsAllowedOnTheGroundAndNormalized() throws Exception {
+		when(liveStateService.find(1)).thenReturn(Optional.of(state(1, false, 0.0)));
+		List<List<Double>> square = List.of(List.of(38.60, 39.30), List.of(38.60, 39.31), List.of(38.61, 39.31),
+				List.of(38.61, 39.30), List.of(38.60, 39.30));
+
+		CommandDto command = service(false).issue(1, CommandType.FENCE_UPLOAD,
+				Map.of("version", "3fa2b4c1d9e07a65", "action", "RTL", "polygons", List.of(square)));
+
+		assertThat(command.status()).isEqualTo(CommandStatus.PENDING);
+		assertThat(command.params()).containsEntry("version", "3fa2b4c1d9e07a65").containsEntry("action", "RTL");
+		// The closing vertex is dropped: the fence protocol takes open rings.
+		assertThat(command.params().get("polygons")).isEqualTo(List.of(square.subList(0, 4)));
+		verify(publisher).publish(any());
+	}
+
+	@Test
+	void invalidFenceUploadIsRejected() {
+		List<List<Double>> triangle = List.of(List.of(38.60, 39.30), List.of(38.60, 39.31), List.of(38.61, 39.31));
+		assertThatThrownBy(() -> service(false).issue(1, CommandType.FENCE_UPLOAD,
+				Map.of("version", "v", "action", "LAND", "polygons", List.of(triangle))))
+				.isInstanceOf(InvalidCommandException.class).hasMessageContaining("action");
+		assertThatThrownBy(() -> service(false).issue(1, CommandType.FENCE_UPLOAD,
+				Map.of("version", "v", "action", "RTL", "polygons", List.of(triangle.subList(0, 2)))))
+				.isInstanceOf(InvalidCommandException.class).hasMessageContaining("at least 3");
+		assertThatThrownBy(() -> service(false).issue(1, CommandType.FENCE_UPLOAD,
+				Map.of("version", "v", "action", "RTL", "polygons", List.of(List.of(List.of(91.0, 39.3), List.of(38.6, 39.31),
+						List.of(38.61, 39.31))))))
+				.isInstanceOf(InvalidCommandException.class).hasMessageContaining("[lat, lon]");
+		assertThatThrownBy(() -> service(false).issue(1, CommandType.FENCE_UPLOAD,
+				Map.of("action", "RTL", "polygons", List.of())))
+				.isInstanceOf(InvalidCommandException.class).hasMessageContaining("version");
+	}
+
+	@Test
+	void finalStatusIsPublishedAsAnEvent() {
+		CommandService service = service(false);
+		CommandDto command = service.issue(1, CommandType.RTL, Map.of());
+
+		service.applyResult(result(command.id(), "ACCEPTED", "ok", T0));
+
+		ArgumentCaptor<CommandCompletedEvent> event = ArgumentCaptor.forClass(CommandCompletedEvent.class);
+		verify(eventPublisher).publishEvent(event.capture());
+		assertThat(event.getValue().command().id()).isEqualTo(command.id());
+		assertThat(event.getValue().command().status()).isEqualTo(CommandStatus.ACCEPTED);
 	}
 
 	@Test

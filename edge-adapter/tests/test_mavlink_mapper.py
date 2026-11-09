@@ -112,6 +112,37 @@ def test_unit_conversions():
     assert telemetry.status.armed is True
 
 
+def fence_status(breach_status=0, breach_count=0):
+    return mavlink.MAVLink_fence_status_message(
+        breach_status=breach_status, breach_count=breach_count,
+        breach_type=mavlink.FENCE_BREACH_BOUNDARY if breach_status else mavlink.FENCE_BREACH_NONE,
+        breach_time=123456)
+
+
+def test_fence_status_breached():
+    telemetry = to_telemetry(1, state_with(heartbeat(), fence_status(breach_status=1, breach_count=3)))
+    assert telemetry.status.fence_breached is True
+    assert telemetry.status.fence_breach_count == 3
+    assert telemetry.status.mode == "AUTO"
+
+
+def test_fence_status_not_breached():
+    telemetry = to_telemetry(1, state_with(heartbeat(), fence_status(breach_status=0, breach_count=1)))
+    assert telemetry.status.fence_breached is False
+    assert telemetry.status.fence_breach_count == 1
+
+
+def test_without_fence_status_the_fence_fields_are_none():
+    telemetry = to_telemetry(1, state_with(heartbeat()))
+    assert telemetry.status.fence_breached is None
+    assert telemetry.status.fence_breach_count is None
+
+
+def test_fence_status_without_heartbeat():
+    telemetry = to_telemetry(1, state_with(fence_status(breach_status=1, breach_count=1)))
+    assert telemetry.status == Status(fence_breached=True, fence_breach_count=1)
+
+
 def test_disarmed():
     telemetry = to_telemetry(1, state_with(heartbeat(armed=False)))
     assert telemetry.status.armed is False

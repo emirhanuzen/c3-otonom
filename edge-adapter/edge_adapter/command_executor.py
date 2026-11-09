@@ -5,7 +5,8 @@ Everything runs in the main loop's thread, the only one that touches the
 pymavlink connections:
   - handle_message() is called with every command taken from RabbitMQ;
   - on_mavlink() is called by MavlinkReader.poll() with every COMMAND_ACK,
-    PARAM_VALUE and STATUSTEXT an autopilot sends;
+    PARAM_VALUE, STATUSTEXT, MISSION_REQUEST(_INT), MISSION_ACK and MISSION_CURRENT
+    an autopilot sends;
   - tick() is called once per loop to detect timeouts.
 
 A command is sent on the same connection the aircraft is read from, and its
@@ -35,7 +36,7 @@ from edge_adapter.command_schema import InvalidCommand, parse_command
 log = logging.getLogger(__name__)
 mavlink = mavutil.mavlink
 
-REPLY_TIMEOUT_S = 5    # each awaited reply (COMMAND_ACK, PARAM_VALUE) must arrive within this
+REPLY_TIMEOUT_S = 5    # each awaited reply (COMMAND_ACK, PARAM_VALUE, fence item request) must arrive within this
 MAX_COMMAND_AGE_S = 10  # a command issued longer ago than this is not carried out (EXPIRED)
 # A refused TAKEOFF reports the "PreArm:" STATUSTEXTs received from this long before
 # the command started until it ended.
@@ -54,6 +55,15 @@ PLANE_MODE_LOITER = 12
 PLANE_MODE_TAKEOFF = 13
 
 PARAM_TAKEOFF_ALT = "TKOFF_ALT"              # metres
+
+# Onboard geofence (FENCE_UPLOAD).
+PARAM_FENCE_ACTION = "FENCE_ACTION"
+PARAM_FENCE_TYPE = "FENCE_TYPE"              # bitmask; FENCE_TYPE_POLYGON is the polygon fences' bit
+PARAM_FENCE_ENABLE = "FENCE_ENABLE"
+FENCE_TYPE_POLYGON = 4
+FENCE_ACTION_VALUES = {"REPORT": 0, "RTL": 1}  # ArduPlane FENCE_ACTION
+MISSION_TYPE_FENCE = mavlink.MAV_MISSION_TYPE_FENCE
+MISSION_TYPE_MISSION = mavlink.MAV_MISSION_TYPE_MISSION
 
 # SITL parameters used by the fault commands.
 PARAM_BATTERY_CAPACITY = "SIM_BATT_CAP_AH"   # amp-hours
@@ -236,8 +246,12 @@ class CommandExecutor:
             return (yield from self._set_mode(drone_id, "LOITER", PLANE_MODE_LOITER))
         if kind is CommandType.GOTO:
             return (yield from self._reposition(drone_id, params["lat"], params["lon"], params["alt"]))
+        if kind is CommandType.ROUTE:
+            return (yield from self._route(drone_id, params["waypoints"]))
         if kind is CommandType.TAKEOFF:
             return (yield from self._takeoff(drone_id, params["alt"]))
+        if kind is CommandType.FENCE_UPLOAD:
+            return (yield from self._fence_upload(drone_id, params["version"], params["action"], params["polygons"]))
         if kind is CommandType.DISARM:
             # param1 0 = disarm; param2 stays 0 (no force), so the autopilot refuses it in flight.
             yield from self._command_long(drone_id, mavlink.MAV_CMD_COMPONENT_ARM_DISARM, 0)
@@ -295,6 +309,121 @@ class CommandExecutor:
                 detail += "; " + "; ".join(reasons)
             raise _Outcome(CommandStatus.REJECTED, detail)
         return f"{altitude}, mode TAKEOFF set, armed"
+
+    def _fence_upload(self, drone_id, version, action, polygons):
+        """Replace the fence items, then FENCE_ACTION, the polygon bit of FENCE_TYPE and FENCE_ENABLE=1.
+
+        Each vertex is one MAV_CMD_NAV_FENCE_POLYGON_VERTEX_EXCLUSION item whose param1 is
+        the vertex count of its polygon. The autopilot asks for the items one by one
+        (MISSION_REQUEST_INT, or MISSION_REQUEST from older firmware) and ends the upload
+        with a MISSION_ACK; every request must come within the reply timeout.
+
+        An empty polygon list clears the fence items with MISSION_CLEAR_ALL and turns the
+        fence off (FENCE_ENABLE=0): an enabled polygon fence without polygons could keep
+        the autopilot from arming. FENCE_ACTION and FENCE_TYPE are then left as they are.
+        """
+        items = [(lat, lon, len(polygon)) for polygon in polygons for lat, lon in polygon]
+        if not items:
+            self._connection(drone_id).mav.mission_clear_all_send(drone_id, AUTOPILOT, MISSION_TYPE_FENCE)
+            ack = yield _Await("MISSION_ACK for the fence clear",
+                               lambda m: _is_mission(m, MISSION_TYPE_FENCE, "MISSION_ACK"))
+            _check_mission_ack(ack, "fence")
+            disable = yield from self._set_param(drone_id, PARAM_FENCE_ENABLE, 0)
+            return f"fence {version}: fence items cleared, {disable}"
+        def send_vertex(conn, seq):
+            lat, lon, vertices = items[seq]
+            conn.mav.mission_item_int_send(
+                drone_id, AUTOPILOT, seq,
+                mavlink.MAV_FRAME_GLOBAL,
+                mavlink.MAV_CMD_NAV_FENCE_POLYGON_VERTEX_EXCLUSION,
+                0, 0,                       # current, autocontinue: unused for fence items
+                vertices, 0, 0, 0,          # param1: vertex count of this item's polygon
+                round(lat * 1e7), round(lon * 1e7), 0,
+                MISSION_TYPE_FENCE,
+            )
+
+        yield from self._upload_items(drone_id, MISSION_TYPE_FENCE, "fence", len(items), send_vertex)
+        upload = f"{len(polygons)} polygon(s) with {len(items)} vertices uploaded"
+        fence_action = yield from self._set_param(drone_id, PARAM_FENCE_ACTION, FENCE_ACTION_VALUES[action])
+        fence_type = yield from self._add_polygon_fence_type(drone_id)
+        enable = yield from self._set_param(drone_id, PARAM_FENCE_ENABLE, 1)
+        return f"fence {version}: {upload}, {fence_action}, {fence_type}, {enable}"
+
+    def _upload_items(self, drone_id, mission_type, label, count, send_item):
+        """The upload half of the mission protocol, for any mission_type.
+
+        MISSION_COUNT, then send_item(connection, seq) for every MISSION_REQUEST(_INT) of that
+        mission_type, until the MISSION_ACK. Each request must come within the reply timeout.
+        """
+        self._connection(drone_id).mav.mission_count_send(drone_id, AUTOPILOT, count, mission_type)
+        sent = set()
+        while True:
+            reply = yield _Await(f"{label} item request or MISSION_ACK ({len(sent)} of {count} items sent)",
+                                 lambda m: _is_mission(m, mission_type,
+                                                       "MISSION_REQUEST_INT", "MISSION_REQUEST", "MISSION_ACK"))
+            if reply.get_type() == "MISSION_ACK":
+                _check_mission_ack(reply, label)
+                if len(sent) < count:
+                    raise _Outcome(CommandStatus.FAILED,
+                                   f"the aircraft ended the {label} upload after {len(sent)} of {count} items")
+                return
+            seq = reply.seq
+            if not 0 <= seq < count:
+                raise _Outcome(CommandStatus.FAILED, f"the aircraft asked for {label} item {seq} of {count}")
+            # A repeated request (the item got lost on the way) is simply answered again.
+            send_item(self._connection(drone_id), seq)
+            sent.add(seq)
+
+    def _route(self, drone_id, waypoints):
+        """Upload the route as the mission, make item 1 current, then switch to AUTO.
+
+        Item 0 is ArduPilot's home slot; it gets the aircraft's current position as a
+        placeholder (the autopilot keeps its own home). Items 1..n-1 are NAV_WAYPOINTs and the
+        target is a NAV_LOITER_UNLIM, so the plane circles there instead of ending the mission.
+        The upload replaces the mission that was on the aircraft.
+        """
+        home = self._home_placeholder(drone_id, waypoints[0])
+        items = [home] + [(mavlink.MAV_CMD_NAV_WAYPOINT, mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT, lat, lon, alt)
+                          for lat, lon, alt in waypoints[:-1]]
+        lat, lon, alt = waypoints[-1]
+        items.append((mavlink.MAV_CMD_NAV_LOITER_UNLIM, mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT, lat, lon, alt))
+
+        def send_item(conn, seq):
+            command, frame, item_lat, item_lon, item_alt = items[seq]
+            conn.mav.mission_item_int_send(
+                drone_id, AUTOPILOT, seq, frame, command,
+                0, 1,                       # current: no; autocontinue: yes
+                0, 0, 0, 0,                 # hold, acceptance radius, pass radius / loiter radius, yaw: defaults
+                round(item_lat * 1e7), round(item_lon * 1e7), item_alt,
+                MISSION_TYPE_MISSION,
+            )
+
+        yield from self._upload_items(drone_id, MISSION_TYPE_MISSION, "mission", len(items), send_item)
+        self._connection(drone_id).mav.mission_set_current_send(drone_id, AUTOPILOT, 1)
+        yield _Await("MISSION_CURRENT with item 1", lambda m: m.get_type() == "MISSION_CURRENT" and m.seq == 1)
+        mode = yield from self._set_mode(drone_id, "AUTO", PLANE_MODE_AUTO)
+        return f"route of {len(waypoints)} waypoint(s) uploaded as the mission, item 1 current, {mode}"
+
+    def _home_placeholder(self, drone_id, first_waypoint):
+        """Item 0: the current position (absolute altitude), or the first waypoint when it is unknown."""
+        position = self.reader.latest(drone_id, "GLOBAL_POSITION_INT")
+        if position is not None:
+            return (mavlink.MAV_CMD_NAV_WAYPOINT, mavlink.MAV_FRAME_GLOBAL,
+                    position.lat / 1e7, position.lon / 1e7, position.alt / 1000)
+        lat, lon, _ = first_waypoint
+        return (mavlink.MAV_CMD_NAV_WAYPOINT, mavlink.MAV_FRAME_GLOBAL, lat, lon, 0)
+
+    def _add_polygon_fence_type(self, drone_id):
+        """Read FENCE_TYPE and set its polygon bit, keeping the other bits (max altitude, circle...)."""
+        self._connection(drone_id).mav.param_request_read_send(
+            drone_id, AUTOPILOT, PARAM_FENCE_TYPE.encode("ascii"), -1)
+        reply = yield _Await(f"PARAM_VALUE for {PARAM_FENCE_TYPE}",
+                             lambda m: m.get_type() == "PARAM_VALUE" and _param_id(m) == PARAM_FENCE_TYPE)
+        current = int(round(reply.param_value))
+        wanted = current | FENCE_TYPE_POLYGON
+        if wanted == current:
+            return f"{PARAM_FENCE_TYPE}={current}"
+        return (yield from self._set_param(drone_id, PARAM_FENCE_TYPE, wanted))
 
     def _prearm_reasons(self, drone_id, since):
         """Distinct PreArm texts received at or after monotonic time `since`, oldest first."""
@@ -374,6 +503,22 @@ class CommandExecutor:
             raise _Outcome(CommandStatus.REJECTED,
                            f"{_command_name(command)} refused by the aircraft: {_result_name(ack.result)}")
         return f"{_command_name(command)} accepted"
+
+
+def _is_mission(msg, mission_type, *types):
+    """True for a message of one of these types that belongs to the protocol of this mission_type."""
+    return msg.get_type() in types and getattr(msg, "mission_type", MISSION_TYPE_MISSION) == mission_type
+
+
+def _check_mission_ack(ack, label):
+    if ack.type != mavlink.MAV_MISSION_ACCEPTED:
+        raise _Outcome(CommandStatus.REJECTED,
+                       f"{label} upload refused by the aircraft: {_enum_name('MAV_MISSION_RESULT', ack.type)}")
+
+
+def _enum_name(enum, value):
+    entry = mavlink.enums[enum].get(value)
+    return entry.name if entry is not None else str(value)
 
 
 def _param_id(msg):

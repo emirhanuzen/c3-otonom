@@ -29,6 +29,7 @@ import com.otonomc3.core.command.service.SimDisabledException;
 import com.otonomc3.core.command.service.TakeoffInNoFlyZoneException;
 import com.otonomc3.core.drone.service.DroneNotFoundException;
 import com.otonomc3.core.drone.service.LinkStatus;
+import com.otonomc3.core.route.service.RouteBlockedException;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
@@ -135,6 +136,33 @@ class CommandControllerTest {
 				.andExpect(jsonPath("$.detail").value("Kalkış noktası yasak bölgede: Havalimanı, Askeri alan"))
 				.andExpect(jsonPath("$.zones[0]").value("Havalimanı"))
 				.andExpect(jsonPath("$.zones[1]").value("Askeri alan"));
+	}
+
+	@Test
+	void gotoWithoutSafeRouteIs409() throws Exception {
+		when(service.issue(eq(1), eq(CommandType.GOTO), any())).thenThrow(new RouteBlockedException(
+				RouteBlockedException.Reason.TARGET_IN_ZONE, List.of("Havalimanı")));
+
+		mvc.perform(post("/api/drones/1/commands").contentType(MediaType.APPLICATION_JSON)
+						.content("{\"type\":\"GOTO\",\"params\":{\"lat\":38.6063,\"lon\":39.2914,\"alt\":120}}"))
+				.andExpect(status().isConflict())
+				.andExpect(jsonPath("$.title").value("Route blocked"))
+				.andExpect(jsonPath("$.detail").value("Hedef yasak bölgeye çok yakın veya içinde"))
+				.andExpect(jsonPath("$.reason").value("TARGET_IN_ZONE"))
+				.andExpect(jsonPath("$.zones[0]").value("Havalimanı"));
+	}
+
+	@Test
+	void gotoAroundZonesReturnsTheRoute() throws Exception {
+		Map<String, Object> params = Map.of("waypoints", List.of(List.of(38.61, 39.28, 120.0), List.of(38.6063, 39.2914, 120.0)));
+		when(service.issue(eq(1), eq(CommandType.GOTO), any())).thenReturn(
+				new CommandDto(ID, 1, CommandType.ROUTE, params, CommandStatus.PENDING, null, ISSUED, null, null));
+
+		mvc.perform(post("/api/drones/1/commands").contentType(MediaType.APPLICATION_JSON)
+						.content("{\"type\":\"GOTO\",\"params\":{\"lat\":38.6063,\"lon\":39.2914,\"alt\":120}}"))
+				.andExpect(status().isAccepted())
+				.andExpect(jsonPath("$.type").value("ROUTE"))
+				.andExpect(jsonPath("$.params.waypoints.length()").value(2));
 	}
 
 	@Test

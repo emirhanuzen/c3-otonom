@@ -37,6 +37,10 @@ class FakeConnection:
 class FakeReader:
     def __init__(self, drones=(DRONE,)):
         self.connections = {drone: FakeConnection() for drone in drones}
+        self.messages = {}   # (sysid, kind) -> latest message
+
+    def latest(self, sysid, kind):
+        return self.messages.get((sysid, kind))
 
     def connection_for(self, sysid):
         return self.connections.get(sysid)
@@ -527,3 +531,361 @@ def test_refused_disarm_is_rejected(executor):
     result = single_result(executor)
     assert result.status is CommandStatus.REJECTED
     assert "MAV_RESULT_DENIED" in result.detail
+
+
+# --- Onboard geofence (FENCE_UPLOAD) ----------------------------------------------
+
+FENCE = mavlink.MAV_MISSION_TYPE_FENCE
+VERTEX = mavlink.MAV_CMD_NAV_FENCE_POLYGON_VERTEX_EXCLUSION
+TRIANGLE = [[38.60, 39.30], [38.60, 39.31], [38.61, 39.30]]
+SQUARE = [[38.70, 39.40], [38.70, 39.41], [38.71, 39.41], [38.71, 39.40]]
+
+
+def fence_command(polygons, action="RTL", version="v1"):
+    return command("FENCE_UPLOAD", {"version": version, "action": action, "polygons": polygons})
+
+
+def item_request(seq, message="MISSION_REQUEST_INT", mission_type=FENCE):
+    factory = (mavlink.MAVLink_mission_request_int_message if message == "MISSION_REQUEST_INT"
+               else mavlink.MAVLink_mission_request_message)
+    return factory(target_system=255, target_component=0, seq=seq, mission_type=mission_type)
+
+
+def mission_ack(result=mavlink.MAV_MISSION_ACCEPTED, mission_type=FENCE):
+    return mavlink.MAVLink_mission_ack_message(target_system=255, target_component=0, type=result,
+                                               mission_type=mission_type)
+
+
+def answer_fence_params(executor, fence_type=1):
+    """The autopilot's answers to FENCE_ACTION, FENCE_TYPE (read, then set) and FENCE_ENABLE."""
+    executor.on_mavlink(DRONE, param_value("FENCE_ACTION", 1))
+    executor.on_mavlink(DRONE, param_value("FENCE_TYPE", fence_type))
+    if not fence_type & 4:
+        executor.on_mavlink(DRONE, param_value("FENCE_TYPE", fence_type | 4))
+    executor.on_mavlink(DRONE, param_value("FENCE_ENABLE", 1))
+
+
+def test_fence_upload_sends_items_in_order_then_params(executor, reader):
+    executor.handle_message(fence_command([TRIANGLE, SQUARE]))
+    assert reader.sent() == [("mission_count", (DRONE, 1, 7, FENCE))]
+
+    for seq in range(7):
+        executor.on_mavlink(DRONE, item_request(seq))
+    items = [args for name, args in reader.sent() if name == "mission_item_int"]
+    assert [item[2] for item in items] == list(range(7))                     # seq
+    assert {item[3] for item in items} == {mavlink.MAV_FRAME_GLOBAL}
+    assert {item[4] for item in items} == {VERTEX}
+    assert [item[7] for item in items] == [3, 3, 3, 4, 4, 4, 4]              # param1: vertex count
+    assert [(item[11], item[12]) for item in items[:3]] == [
+        (386000000, 393000000), (386000000, 393100000), (386100000, 393000000)]
+    assert {item[14] for item in items} == {FENCE}                          # mission_type
+    assert executor.take_results() == []
+
+    executor.on_mavlink(DRONE, mission_ack())
+    assert executor.take_results() == []
+    assert sent_param_sets(reader) == [("FENCE_ACTION", 1)]
+
+    executor.on_mavlink(DRONE, param_value("FENCE_ACTION", 1))
+    reads = [args for name, args in reader.sent() if name == "param_request_read"]
+    assert reads == [(DRONE, 1, b"FENCE_TYPE", -1)]
+
+    executor.on_mavlink(DRONE, param_value("FENCE_TYPE", 3))                 # max altitude + circle
+    assert sent_param_sets(reader)[-1] == ("FENCE_TYPE", 7)                  # bits kept, polygon added
+    executor.on_mavlink(DRONE, param_value("FENCE_TYPE", 7))
+    assert sent_param_sets(reader)[-1] == ("FENCE_ENABLE", 1)
+    executor.on_mavlink(DRONE, param_value("FENCE_ENABLE", 1))
+
+    result = single_result(executor)
+    assert result.status is CommandStatus.ACCEPTED
+    assert result.detail == ("fence v1: 2 polygon(s) with 7 vertices uploaded, FENCE_ACTION=1, "
+                             "FENCE_TYPE=7, FENCE_ENABLE=1")
+
+
+def test_fence_upload_answers_repeated_and_old_style_requests(executor, reader):
+    executor.handle_message(fence_command([TRIANGLE]))
+    executor.on_mavlink(DRONE, item_request(0))
+    executor.on_mavlink(DRONE, item_request(0))                              # item 0 got lost
+    executor.on_mavlink(DRONE, item_request(1, message="MISSION_REQUEST"))
+    executor.on_mavlink(DRONE, item_request(2))
+    executor.on_mavlink(DRONE, mission_ack())
+    answer_fence_params(executor, fence_type=4)
+
+    seqs = [args[2] for name, args in reader.sent() if name == "mission_item_int"]
+    assert seqs == [0, 0, 1, 2]
+    assert single_result(executor).status is CommandStatus.ACCEPTED
+
+
+def test_fence_type_with_polygon_bit_is_not_set_again(executor, reader):
+    executor.handle_message(fence_command([TRIANGLE], action="REPORT"))
+    for seq in range(3):
+        executor.on_mavlink(DRONE, item_request(seq))
+    executor.on_mavlink(DRONE, mission_ack())
+    executor.on_mavlink(DRONE, param_value("FENCE_ACTION", 0))
+    executor.on_mavlink(DRONE, param_value("FENCE_TYPE", 6))
+    executor.on_mavlink(DRONE, param_value("FENCE_ENABLE", 1))
+
+    assert sent_param_sets(reader) == [("FENCE_ACTION", 0), ("FENCE_ENABLE", 1)]
+    result = single_result(executor)
+    assert result.status is CommandStatus.ACCEPTED
+    assert "FENCE_TYPE=6" in result.detail
+
+
+def test_empty_fence_upload_clears_the_items_and_disables_the_fence(executor, reader):
+    executor.handle_message(fence_command([]))
+    assert reader.sent() == [("mission_clear_all", (DRONE, 1, FENCE))]
+
+    executor.on_mavlink(DRONE, mission_ack(mission_type=mavlink.MAV_MISSION_TYPE_MISSION))  # not ours
+    assert sent_param_sets(reader) == []
+
+    executor.on_mavlink(DRONE, mission_ack())
+    assert sent_param_sets(reader) == [("FENCE_ENABLE", 0)]
+    assert executor.take_results() == []                     # waits for the PARAM_VALUE
+
+    executor.on_mavlink(DRONE, param_value("FENCE_ENABLE", 0))
+
+    # Nothing uploaded, FENCE_ACTION and FENCE_TYPE untouched.
+    assert not [name for name, _ in reader.sent()
+                if name in ("mission_count", "mission_item_int", "param_request_read")]
+    assert sent_param_sets(reader) == [("FENCE_ENABLE", 0)]
+    result = single_result(executor)
+    assert result.status is CommandStatus.ACCEPTED
+    assert result.detail == "fence v1: fence items cleared, FENCE_ENABLE=0"
+
+
+def test_empty_fence_upload_with_fence_still_enabled_is_failed(executor):
+    executor.handle_message(fence_command([]))
+    executor.on_mavlink(DRONE, mission_ack())
+    executor.on_mavlink(DRONE, param_value("FENCE_ENABLE", 1))
+
+    result = single_result(executor)
+    assert result.status is CommandStatus.FAILED
+    assert "FENCE_ENABLE is 1, expected 0" in result.detail
+
+
+def test_empty_fence_upload_without_param_answer_is_timeout(executor, clock):
+    executor.handle_message(fence_command([]))
+    executor.on_mavlink(DRONE, mission_ack())
+    clock.advance(5)
+    executor.tick()
+
+    result = single_result(executor)
+    assert result.status is CommandStatus.TIMEOUT
+    assert "PARAM_VALUE for FENCE_ENABLE" in result.detail
+
+
+def test_refused_fence_clear_does_not_disable_the_fence(executor, reader):
+    executor.handle_message(fence_command([]))
+    executor.on_mavlink(DRONE, mission_ack(mavlink.MAV_MISSION_ERROR))
+
+    assert single_result(executor).status is CommandStatus.REJECTED
+    assert sent_param_sets(reader) == []
+
+
+def test_refused_fence_upload_is_rejected_and_sets_no_params(executor, reader):
+    executor.handle_message(fence_command([TRIANGLE]))
+    executor.on_mavlink(DRONE, item_request(0))
+    executor.on_mavlink(DRONE, mission_ack(mavlink.MAV_MISSION_NO_SPACE))
+
+    result = single_result(executor)
+    assert result.status is CommandStatus.REJECTED
+    assert "MAV_MISSION_NO_SPACE" in result.detail
+    assert sent_param_sets(reader) == []
+
+
+def test_fence_upload_ended_early_is_failed(executor):
+    executor.handle_message(fence_command([TRIANGLE]))
+    executor.on_mavlink(DRONE, item_request(0))
+    executor.on_mavlink(DRONE, mission_ack())
+
+    result = single_result(executor)
+    assert result.status is CommandStatus.FAILED
+    assert "1 of 3" in result.detail
+
+
+def test_fence_request_out_of_range_is_failed(executor):
+    executor.handle_message(fence_command([TRIANGLE]))
+    executor.on_mavlink(DRONE, item_request(5))
+
+    result = single_result(executor)
+    assert result.status is CommandStatus.FAILED
+    assert "item 5 of 3" in result.detail
+
+
+def test_mission_messages_of_another_type_are_ignored(executor, reader):
+    executor.handle_message(fence_command([TRIANGLE]))
+    executor.on_mavlink(DRONE, item_request(0, mission_type=mavlink.MAV_MISSION_TYPE_MISSION))
+
+    assert not [name for name, _ in reader.sent() if name == "mission_item_int"]
+
+
+def test_each_fence_item_has_its_own_timeout(executor, clock):
+    executor.handle_message(fence_command([TRIANGLE]))
+    for seq in range(3):
+        clock.advance(4)
+        executor.on_mavlink(DRONE, item_request(seq))
+        executor.tick()
+    assert executor.take_results() == []
+
+    clock.advance(5)                       # no MISSION_ACK
+    executor.tick()
+    result = single_result(executor)
+    assert result.status is CommandStatus.TIMEOUT
+    assert "3 of 3 items sent" in result.detail
+
+
+def upload_triangle(executor):
+    executor.handle_message(fence_command([TRIANGLE]))
+    for seq in range(3):
+        executor.on_mavlink(DRONE, item_request(seq))
+    executor.on_mavlink(DRONE, mission_ack())
+
+
+def test_fence_param_not_applied_is_failed(executor):
+    upload_triangle(executor)
+    executor.on_mavlink(DRONE, param_value("FENCE_ACTION", 1))
+    executor.on_mavlink(DRONE, param_value("FENCE_TYPE", 4))
+    executor.on_mavlink(DRONE, param_value("FENCE_ENABLE", 0))
+
+    result = single_result(executor)
+    assert result.status is CommandStatus.FAILED
+    assert "FENCE_ENABLE is 0, expected 1" in result.detail
+
+
+def test_fence_param_without_answer_is_timeout(executor, clock):
+    upload_triangle(executor)
+    executor.on_mavlink(DRONE, param_value("FENCE_ACTION", 1))
+    clock.advance(5)
+    executor.tick()
+
+    result = single_result(executor)
+    assert result.status is CommandStatus.TIMEOUT
+    assert "PARAM_VALUE for FENCE_TYPE" in result.detail
+
+
+# --- ROUTE ---------------------------------------------------------------------------
+
+MISSION = mavlink.MAV_MISSION_TYPE_MISSION
+ROUTE_POINTS = [[38.61, 39.28, 120], [38.62, 39.30, 120], [38.6063, 39.2914, 120]]
+
+
+def route_command(waypoints=None):
+    return command("ROUTE", {"waypoints": waypoints or ROUTE_POINTS})
+
+
+def mission_current(seq):
+    return mavlink.MAVLink_mission_current_message(seq=seq)
+
+
+def request_route_items(executor, count):
+    for seq in range(count):
+        executor.on_mavlink(DRONE, item_request(seq, mission_type=MISSION))
+
+
+def test_route_is_uploaded_as_mission_then_item_1_and_auto(executor, reader):
+    reader.messages[(DRONE, "GLOBAL_POSITION_INT")] = mavlink.MAVLink_global_position_int_message(
+        time_boot_ms=0, lat=386000000, lon=392000000, alt=1100500, relative_alt=100000,
+        vx=0, vy=0, vz=0, hdg=9000)
+    executor.handle_message(route_command())
+    assert reader.sent() == [("mission_count", (DRONE, 1, 4, MISSION))]
+
+    request_route_items(executor, 4)
+    items = [args for name, args in reader.sent() if name == "mission_item_int"]
+    assert [item[2] for item in items] == [0, 1, 2, 3]
+    assert [item[4] for item in items] == [mavlink.MAV_CMD_NAV_WAYPOINT, mavlink.MAV_CMD_NAV_WAYPOINT,
+                                           mavlink.MAV_CMD_NAV_WAYPOINT, mavlink.MAV_CMD_NAV_LOITER_UNLIM]
+    # Item 0: the current position as home placeholder, absolute altitude.
+    assert items[0][3] == mavlink.MAV_FRAME_GLOBAL
+    assert (items[0][11], items[0][12], items[0][13]) == (386000000, 392000000, 1100.5)
+    # The waypoints and the target, altitude above home.
+    assert {item[3] for item in items[1:]} == {mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT}
+    assert [(item[11], item[12], item[13]) for item in items[1:]] == [
+        (386100000, 392800000, 120.0), (386200000, 393000000, 120.0), (386063000, 392914000, 120.0)]
+    assert {item[5] for item in items} == {0}                # current
+    assert {item[6] for item in items} == {1}                # autocontinue
+    assert {item[14] for item in items} == {MISSION}         # mission_type
+    assert executor.take_results() == []
+
+    executor.on_mavlink(DRONE, mission_ack(mission_type=MISSION))
+    assert reader.sent()[-1] == ("mission_set_current", (DRONE, 1, 1))
+
+    executor.on_mavlink(DRONE, mission_current(0))           # an old one: keeps waiting
+    assert reader.sent()[-1][0] == "mission_set_current"
+    executor.on_mavlink(DRONE, mission_current(1))
+    assert reader.sent()[-1] == ("command_long", (DRONE, 1, mavlink.MAV_CMD_DO_SET_MODE, 0,
+                                                  mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED, 10,
+                                                  0.0, 0.0, 0.0, 0.0, 0.0))
+
+    executor.on_mavlink(DRONE, ack(mavlink.MAV_CMD_DO_SET_MODE))
+    result = single_result(executor)
+    assert result.status is CommandStatus.ACCEPTED
+    assert result.detail == "route of 3 waypoint(s) uploaded as the mission, item 1 current, mode AUTO set"
+
+
+def test_route_without_known_position_uses_the_first_waypoint_as_home_placeholder(executor, reader):
+    executor.handle_message(route_command([[38.6063, 39.2914, 100]]))
+    assert reader.sent() == [("mission_count", (DRONE, 1, 2, MISSION))]
+    request_route_items(executor, 2)
+
+    items = [args for name, args in reader.sent() if name == "mission_item_int"]
+    assert (items[0][4], items[0][11], items[0][12], items[0][13]) == (
+        mavlink.MAV_CMD_NAV_WAYPOINT, 386063000, 392914000, 0)
+    assert items[1][4] == mavlink.MAV_CMD_NAV_LOITER_UNLIM
+
+
+def test_refused_route_upload_is_rejected_and_mode_unchanged(executor, reader):
+    executor.handle_message(route_command())
+    executor.on_mavlink(DRONE, item_request(0, mission_type=MISSION))
+    executor.on_mavlink(DRONE, mission_ack(mavlink.MAV_MISSION_INVALID, mission_type=MISSION))
+
+    result = single_result(executor)
+    assert result.status is CommandStatus.REJECTED
+    assert "mission upload refused by the aircraft: MAV_MISSION_INVALID" in result.detail
+    assert not [name for name, _ in reader.sent() if name in ("mission_set_current", "command_long")]
+
+
+def test_fence_messages_do_not_drive_a_route_upload(executor, reader):
+    executor.handle_message(route_command())
+    executor.on_mavlink(DRONE, item_request(0))                       # fence type
+    executor.on_mavlink(DRONE, mission_ack())                         # fence type
+
+    assert not [name for name, _ in reader.sent() if name == "mission_item_int"]
+    assert executor.take_results() == []
+
+
+def test_route_without_mission_current_is_timeout(executor, clock):
+    executor.handle_message(route_command())
+    request_route_items(executor, 4)
+    executor.on_mavlink(DRONE, mission_ack(mission_type=MISSION))
+    clock.advance(5)
+    executor.tick()
+
+    result = single_result(executor)
+    assert result.status is CommandStatus.TIMEOUT
+    assert "MISSION_CURRENT with item 1" in result.detail
+
+
+def test_route_with_auto_refused_is_rejected(executor):
+    executor.handle_message(route_command())
+    request_route_items(executor, 4)
+    executor.on_mavlink(DRONE, mission_ack(mission_type=MISSION))
+    executor.on_mavlink(DRONE, mission_current(1))
+    executor.on_mavlink(DRONE, ack(mavlink.MAV_CMD_DO_SET_MODE, mavlink.MAV_RESULT_DENIED))
+
+    result = single_result(executor)
+    assert result.status is CommandStatus.REJECTED
+    assert "MAV_CMD_DO_SET_MODE refused" in result.detail
+
+
+def test_route_item_requests_each_have_their_own_timeout(executor, clock):
+    executor.handle_message(route_command())
+    for seq in range(2):
+        clock.advance(4)
+        executor.on_mavlink(DRONE, item_request(seq, mission_type=MISSION))
+        executor.tick()
+    assert executor.take_results() == []
+
+    clock.advance(5)
+    executor.tick()
+    result = single_result(executor)
+    assert result.status is CommandStatus.TIMEOUT
+    assert "mission item request or MISSION_ACK (2 of 4 items sent)" in result.detail

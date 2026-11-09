@@ -23,7 +23,7 @@ def to_telemetry(drone_id, state):
         velocity=_velocity(state.messages.get("VFR_HUD")),
         battery=_battery(state.messages.get("SYS_STATUS")),
         gps=_gps(state.messages.get("GPS_RAW_INT")),
-        status=_status(state.messages.get("HEARTBEAT")),
+        status=_status(state.messages.get("HEARTBEAT"), state.messages.get("FENCE_STATUS")),
     )
 
 
@@ -75,11 +75,16 @@ def _gps(msg):
     )
 
 
-def _status(msg):
-    if msg is None:
-        return Status()
+def _status(heartbeat, fence):
+    # FENCE_STATUS only arrives while the autopilot's fence is enabled; without it both stay None.
+    fence_breached = bool(fence.breach_status) if fence is not None else None
+    fence_breach_count = fence.breach_count if fence is not None else None
+    if heartbeat is None:
+        return Status(fence_breached=fence_breached, fence_breach_count=fence_breach_count)
     return Status(
         # The mode name comes from custom_mode, interpreted per vehicle type.
-        mode=mavutil.mode_string_v10(msg),
-        armed=bool(msg.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED),
+        mode=mavutil.mode_string_v10(heartbeat),
+        armed=bool(heartbeat.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED),
+        fence_breached=fence_breached,
+        fence_breach_count=fence_breach_count,
     )

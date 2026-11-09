@@ -10,7 +10,8 @@ Based on experiments/read_fleet.py, with two differences:
 The reader stores the latest raw message of each wanted type per aircraft.
 Turning them into JSON (and converting units) is the job of schema.py.
 
-Command replies (COMMAND_ACK, PARAM_VALUE, STATUSTEXT) are not stored but handed to the
+Command replies (COMMAND_ACK, PARAM_VALUE, STATUSTEXT and the fence upload's
+MISSION_REQUEST(_INT) / MISSION_ACK) are not stored but handed to the
 listeners registered with add_listener(), and connection_for() gives the
 connection an aircraft is read from, so commands go out on that same link.
 """
@@ -24,10 +25,15 @@ from pymavlink import mavutil
 log = logging.getLogger(__name__)
 
 # The MAVLink message types we care about. Everything else is ignored.
-WANTED = {"HEARTBEAT", "GLOBAL_POSITION_INT", "VFR_HUD", "SYS_STATUS", "GPS_RAW_INT"}
+WANTED = {"HEARTBEAT", "GLOBAL_POSITION_INT", "VFR_HUD", "SYS_STATUS", "GPS_RAW_INT", "FENCE_STATUS"}
 # Replies to commands, passed on to the listeners instead of being stored.
-# STATUSTEXT carries the autopilot's reason for refusing to arm ("PreArm: ...").
-FORWARDED = {"COMMAND_ACK", "PARAM_VALUE", "STATUSTEXT"}
+# STATUSTEXT carries the autopilot's reason for refusing to arm ("PreArm: ...");
+# the MISSION_* messages drive the fence and route uploads (FENCE_UPLOAD, ROUTE).
+FORWARDED = {"COMMAND_ACK", "PARAM_VALUE", "STATUSTEXT", "MISSION_REQUEST", "MISSION_REQUEST_INT", "MISSION_ACK",
+             "MISSION_CURRENT"}
+# ArduPilot sends FENCE_STATUS with its extended status stream, but only while a fence
+# is enabled; it is also asked for explicitly, at this interval.
+FENCE_STATUS_INTERVAL_US = 1_000_000
 
 RECONNECT_INTERVAL_S = 5  # seconds between two connection attempts of one aircraft
 # pymavlink does not raise when SITL closes the TCP socket, recv() just keeps
@@ -67,8 +73,13 @@ class MavlinkReader:
         self._listeners = []
 
     def add_listener(self, listener):
-        """Register listener(system_id, msg), called for every COMMAND_ACK, PARAM_VALUE and STATUSTEXT."""
+        """Register listener(system_id, msg), called for every FORWARDED message."""
         self._listeners.append(listener)
+
+    def latest(self, sysid, kind):
+        """The latest stored message of this WANTED type from aircraft sysid, or None."""
+        state = self.fleet.get(sysid)
+        return state.messages.get(kind) if state is not None else None
 
     def connection_for(self, sysid):
         """The open pymavlink connection aircraft sysid is read from, or None."""
@@ -116,6 +127,11 @@ class MavlinkReader:
             self.stream_rate_hz,  # rate in Hz
             1,                    # 1 = start streaming, 0 = stop
         )
+        # MAV_CMD_SET_MESSAGE_INTERVAL; its COMMAND_ACK reaches the listeners and matches no command.
+        link.conn.mav.command_long_send(
+            msg.get_srcSystem(), msg.get_srcComponent(),
+            mavutil.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL, 0,
+            mavutil.mavlink.MAVLINK_MSG_ID_FENCE_STATUS, FENCE_STATUS_INTERVAL_US, 0, 0, 0, 0, 0)
         link.stream_requested = True
         log.info("Aircraft %d answered on %s, telemetry stream requested at %d Hz",
                  msg.get_srcSystem(), link.connection_string, self.stream_rate_hz)
