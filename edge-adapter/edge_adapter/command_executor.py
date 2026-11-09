@@ -75,6 +75,12 @@ PARAM_GPS_DISABLE = "SIM_GPS_DISABLE"
 
 BATTERY_DRAIN_CAPACITY_AH = 0.3
 BATTERY_NORMAL_CAPACITY_AH = 10
+# MAV_CMD_BATTERY_RESET of FAULT_RESET: param1 = bitmask of the batteries, param2 = charge in %.
+BATTERY_RESET_ALL = 0xFF
+BATTERY_RESET_PERCENT = 100
+BATTERY_RESET_NOT_SUPPORTED = "battery reset not supported"
+# LAND: item 1 of the landing mission is the DO_LAND_START.
+LAND_START_SEQ = 1
 LOW_RTL_ALTITUDE_CM = 2000
 NORMAL_RTL_ALTITUDE_CM = 10000
 
@@ -248,6 +254,11 @@ class CommandExecutor:
             return (yield from self._reposition(drone_id, params["lat"], params["lon"], params["alt"]))
         if kind is CommandType.ROUTE:
             return (yield from self._route(drone_id, params["waypoints"]))
+        if kind is CommandType.LAND:
+            return (yield from self._land(drone_id, params["approach"], params["land"]))
+        if kind is CommandType.MISSION_UPLOAD:
+            return (yield from self._mission_upload(drone_id, params["waypoints"], params["loop"],
+                                                    params["startSeq"]))
         if kind is CommandType.TAKEOFF:
             return (yield from self._takeoff(drone_id, params["alt"]))
         if kind is CommandType.FENCE_UPLOAD:
@@ -273,7 +284,8 @@ class CommandExecutor:
             battery = yield from self._set_param(drone_id, PARAM_BATTERY_CAPACITY, BATTERY_NORMAL_CAPACITY_AH)
             gps = yield from self._set_gps(drone_id, gps_on=True)
             altitude = yield from self._set_param(drone_id, PARAM_RTL_ALTITUDE, NORMAL_RTL_ALTITUDE_CM)
-            return f"faults reset: {battery}, {gps}, {altitude}, link drop cancelled"
+            charge = yield from self._reset_battery(drone_id)
+            return f"faults reset: {battery}, {gps}, {altitude}, {charge}, link drop cancelled"
         raise _Outcome(CommandStatus.REJECTED, f"unsupported command type {kind.value}")
 
     def _connection(self, drone_id):
@@ -382,36 +394,97 @@ class CommandExecutor:
         target is a NAV_LOITER_UNLIM, so the plane circles there instead of ending the mission.
         The upload replaces the mission that was on the aircraft.
         """
-        home = self._home_placeholder(drone_id, waypoints[0])
-        items = [home] + [(mavlink.MAV_CMD_NAV_WAYPOINT, mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT, lat, lon, alt)
-                          for lat, lon, alt in waypoints[:-1]]
-        lat, lon, alt = waypoints[-1]
-        items.append((mavlink.MAV_CMD_NAV_LOITER_UNLIM, mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT, lat, lon, alt))
+        items = [self._home_placeholder(drone_id, waypoints[0])]
+        items += [_nav_item(mavlink.MAV_CMD_NAV_WAYPOINT, point) for point in waypoints[:-1]]
+        items.append(_nav_item(mavlink.MAV_CMD_NAV_LOITER_UNLIM, waypoints[-1]))
+        mode = yield from self._fly_mission(drone_id, items, 1)
+        return f"route of {len(waypoints)} waypoint(s) uploaded as the mission, item 1 current, {mode}"
 
+    def _mission_upload(self, drone_id, waypoints, loop, start_seq):
+        """Upload a planned mission, make item start_seq current, then switch to AUTO.
+
+        Items: 0 the home placeholder (as for ROUTE), 1..n the waypoints. A loop's waypoints are
+        all NAV_WAYPOINTs followed by DO_JUMP(1, -1), which sends the plane back to item 1 for ever;
+        otherwise the last waypoint is a NAV_LOITER_UNLIM, so the plane circles there.
+        """
+        items = [self._home_placeholder(drone_id, waypoints[0])]
+        if loop:
+            items += [_nav_item(mavlink.MAV_CMD_NAV_WAYPOINT, point) for point in waypoints]
+            # param1: the item to jump to; param2: repeat count, -1 = for ever.
+            items.append((mavlink.MAV_CMD_DO_JUMP, mavlink.MAV_FRAME_MISSION, 1, -1, 0, 0, 0))
+        else:
+            items += [_nav_item(mavlink.MAV_CMD_NAV_WAYPOINT, point) for point in waypoints[:-1]]
+            items.append(_nav_item(mavlink.MAV_CMD_NAV_LOITER_UNLIM, waypoints[-1]))
+        mode = yield from self._fly_mission(drone_id, items, start_seq)
+        kind = "looped mission" if loop else "mission"
+        return f"{kind} of {len(waypoints)} waypoint(s) uploaded, item {start_seq} current, {mode}"
+
+    def _land(self, drone_id, approach, land):
+        """Upload a landing: [home, DO_LAND_START, approach waypoint, NAV_LAND], start at DO_LAND_START, AUTO.
+
+        DO_LAND_START marks where the landing sequence begins (an RTL with RTL_AUTOLAND or a later
+        DO_LAND_START also finds it). It is not a navigation command, so ArduPilot may report the
+        approach waypoint (item 2) as current right away; MISSION_CURRENT 1 or 2 both count.
+        After the touchdown the autopilot disarms by itself (LAND_DISARMDELAY).
+        """
+        approach_lat, approach_lon, approach_alt = approach
+        land_lat, land_lon = land
+        items = [
+            self._home_placeholder(drone_id, (land_lat, land_lon, 0)),
+            (mavlink.MAV_CMD_DO_LAND_START, mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT, 0, 0, land_lat, land_lon, 0),
+            _nav_item(mavlink.MAV_CMD_NAV_WAYPOINT, approach),
+            # param1: abort altitude, 0 = default; param2: precision land mode, 0 = off.
+            (mavlink.MAV_CMD_NAV_LAND, mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT, 0, 0, land_lat, land_lon, 0),
+        ]
+        mode = yield from self._fly_mission(drone_id, items, LAND_START_SEQ, accepted_seqs=(LAND_START_SEQ,
+                                                                                           LAND_START_SEQ + 1))
+        return (f"landing uploaded: approach {approach_lat:.7f}, {approach_lon:.7f} at {approach_alt:g} m, "
+                f"land {land_lat:.7f}, {land_lon:.7f}, item {LAND_START_SEQ} current, {mode}")
+
+    def _fly_mission(self, drone_id, items, start_seq, accepted_seqs=None):
+        """Upload the mission items, MISSION_SET_CURRENT start_seq, wait for MISSION_CURRENT to say so, then AUTO.
+
+        Each item is (command, frame, param1, param2, lat, lon, alt); the upload replaces the
+        mission on the aircraft. Every reply has its own reply timeout. accepted_seqs: the
+        MISSION_CURRENT seqs that confirm start_seq (default: start_seq only).
+        """
+        accepted = tuple(accepted_seqs) if accepted_seqs else (start_seq,)
         def send_item(conn, seq):
-            command, frame, item_lat, item_lon, item_alt = items[seq]
+            command, frame, param1, param2, lat, lon, alt = items[seq]
             conn.mav.mission_item_int_send(
                 drone_id, AUTOPILOT, seq, frame, command,
                 0, 1,                       # current: no; autocontinue: yes
-                0, 0, 0, 0,                 # hold, acceptance radius, pass radius / loiter radius, yaw: defaults
-                round(item_lat * 1e7), round(item_lon * 1e7), item_alt,
+                param1, param2, 0, 0,       # NAV items: default hold and radii; DO_JUMP: target item, repeats
+                round(lat * 1e7), round(lon * 1e7), alt,
                 MISSION_TYPE_MISSION,
             )
 
         yield from self._upload_items(drone_id, MISSION_TYPE_MISSION, "mission", len(items), send_item)
-        self._connection(drone_id).mav.mission_set_current_send(drone_id, AUTOPILOT, 1)
-        yield _Await("MISSION_CURRENT with item 1", lambda m: m.get_type() == "MISSION_CURRENT" and m.seq == 1)
-        mode = yield from self._set_mode(drone_id, "AUTO", PLANE_MODE_AUTO)
-        return f"route of {len(waypoints)} waypoint(s) uploaded as the mission, item 1 current, {mode}"
+        self._connection(drone_id).mav.mission_set_current_send(drone_id, AUTOPILOT, start_seq)
+        yield _Await(f"MISSION_CURRENT with item {' or '.join(str(seq) for seq in accepted)}",
+                     lambda m: m.get_type() == "MISSION_CURRENT" and m.seq in accepted)
+        return (yield from self._set_mode(drone_id, "AUTO", PLANE_MODE_AUTO))
 
     def _home_placeholder(self, drone_id, first_waypoint):
         """Item 0: the current position (absolute altitude), or the first waypoint when it is unknown."""
         position = self.reader.latest(drone_id, "GLOBAL_POSITION_INT")
         if position is not None:
-            return (mavlink.MAV_CMD_NAV_WAYPOINT, mavlink.MAV_FRAME_GLOBAL,
+            return (mavlink.MAV_CMD_NAV_WAYPOINT, mavlink.MAV_FRAME_GLOBAL, 0, 0,
                     position.lat / 1e7, position.lon / 1e7, position.alt / 1000)
         lat, lon, _ = first_waypoint
-        return (mavlink.MAV_CMD_NAV_WAYPOINT, mavlink.MAV_FRAME_GLOBAL, lat, lon, 0)
+        return (mavlink.MAV_CMD_NAV_WAYPOINT, mavlink.MAV_FRAME_GLOBAL, 0, 0, lat, lon, 0)
+
+    def _reset_battery(self, drone_id):
+        """MAV_CMD_BATTERY_RESET to 100 %: the battery monitor forgets the consumed charge.
+
+        A larger SIM_BATT_CAP_AH alone does not refill it. A refusal does not fail FAULT_RESET;
+        the detail then says so (the test page shows that a SITL restart refills the battery).
+        """
+        ack = yield from self._command_long_ack(drone_id, mavlink.MAV_CMD_BATTERY_RESET,
+                                                BATTERY_RESET_ALL, BATTERY_RESET_PERCENT)
+        if ack.result == mavlink.MAV_RESULT_ACCEPTED:
+            return f"battery reset to {BATTERY_RESET_PERCENT} %"
+        return f"{BATTERY_RESET_NOT_SUPPORTED} ({_result_name(ack.result)})"
 
     def _add_polygon_fence_type(self, drone_id):
         """Read FENCE_TYPE and set its polygon bit, keeping the other bits (max altitude, circle...)."""
@@ -503,6 +576,12 @@ class CommandExecutor:
             raise _Outcome(CommandStatus.REJECTED,
                            f"{_command_name(command)} refused by the aircraft: {_result_name(ack.result)}")
         return f"{_command_name(command)} accepted"
+
+
+def _nav_item(command, point):
+    """A navigation mission item at (lat, lon, alt above home), with the autopilot's default params."""
+    lat, lon, alt = point
+    return (command, mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT, 0, 0, lat, lon, alt)
 
 
 def _is_mission(msg, mission_type, *types):

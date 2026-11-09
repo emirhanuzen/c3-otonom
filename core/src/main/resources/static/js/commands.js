@@ -12,6 +12,8 @@ window.OtonomCommands = (() => {
 		LOITER: 'Bekle',
 		GOTO: 'Noktaya git',
 		ROUTE: 'Rotayla git',
+		MISSION_UPLOAD: 'Görev yükle',
+		LAND: 'İniş yap',
 		TAKEOFF: 'Kalkış',
 		DISARM: 'Motoru kapat',
 		FENCE_UPLOAD: 'Otopilot bölgeleri',

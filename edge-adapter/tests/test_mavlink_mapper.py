@@ -138,6 +138,21 @@ def test_without_fence_status_the_fence_fields_are_none():
     assert telemetry.status.fence_breach_count is None
 
 
+def test_mission_current_gives_the_mission_seq():
+    telemetry = to_telemetry(1, state_with(heartbeat(), mavlink.MAVLink_mission_current_message(seq=3)))
+    assert telemetry.status.mission_seq == 3
+    assert to_telemetry(1, state_with(heartbeat())).status.mission_seq is None
+
+
+def test_home_position_gives_the_home():
+    home = mavlink.MAVLink_home_position_message(
+        latitude=386125000, longitude=392850000, altitude=1010500, x=0, y=0, z=0, q=[1, 0, 0, 0],
+        approach_x=0, approach_y=0, approach_z=0, time_usec=0)
+    telemetry = to_telemetry(1, state_with(heartbeat(), home))
+    assert (telemetry.home.lat, telemetry.home.lon, telemetry.home.alt_msl) == (38.6125, 39.285, 1010.5)
+    assert to_telemetry(1, state_with(heartbeat())).home.lat is None
+
+
 def test_fence_status_without_heartbeat():
     telemetry = to_telemetry(1, state_with(fence_status(breach_status=1, breach_count=1)))
     assert telemetry.status == Status(fence_breached=True, fence_breach_count=1)

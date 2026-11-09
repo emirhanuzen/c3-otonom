@@ -56,12 +56,20 @@ public class RouteService {
 		if (position == null || !isCoordinate(position.lat(), 90) || !isCoordinate(position.lon(), 180)) {
 			throw new RouteBlockedException(RouteBlockedException.Reason.NO_POSITION, List.of());
 		}
-		List<RouteObstacle> zones = geofenceRepository
-				.findEffectiveAlong(position.lat(), position.lon(), lat, lon, properties.corridorM(), clock.instant())
+		return planner.plan(position.lat(), position.lon(), lat, lon,
+				obstaclesAlong(position.lat(), position.lon(), lat, lon));
+	}
+
+	/**
+	 * The zones effective now within otonom.route.corridor-m of the straight segment between the
+	 * two points: the obstacles a route between them has to consider. Also used by mission validation.
+	 */
+	public List<RouteObstacle> obstaclesAlong(double startLat, double startLon, double targetLat, double targetLon) {
+		return geofenceRepository
+				.findEffectiveAlong(startLat, startLon, targetLat, targetLon, properties.corridorM(), clock.instant())
 				.stream()
 				.map(zone -> new RouteObstacle(zone.getName(), zone.getArea()))
 				.toList();
-		return planner.plan(position.lat(), position.lon(), lat, lon, zones);
 	}
 
 	private double etaSpeed(TelemetryMessageDto message) {

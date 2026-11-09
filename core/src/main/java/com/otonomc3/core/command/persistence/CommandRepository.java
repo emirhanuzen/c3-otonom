@@ -3,9 +3,11 @@ package com.otonomc3.core.command.persistence;
 import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 import com.otonomc3.core.command.service.CommandStatus;
+import com.otonomc3.core.command.service.CommandType;
 import org.springframework.data.domain.Limit;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
@@ -22,6 +24,10 @@ import org.springframework.transaction.annotation.Transactional;
 public interface CommandRepository extends JpaRepository<CommandEntity, UUID> {
 
 	List<CommandEntity> findByDroneIdOrderByIssuedAtDescIdDesc(Integer droneId, Limit limit);
+
+	/** The drone's newest command of one of these types. */
+	Optional<CommandEntity> findFirstByDroneIdAndTypeInOrderByIssuedAtDescIdDesc(Integer droneId,
+			Collection<CommandType> types);
 
 	@Query("SELECT c.id FROM CommandEntity c WHERE c.status = :status AND c.issuedAt < :issuedBefore")
 	List<UUID> findIdsByStatusIssuedBefore(@Param("status") CommandStatus status,

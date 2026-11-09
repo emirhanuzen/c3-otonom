@@ -46,6 +46,14 @@ class Status:
     armed: bool | None = None
     fence_breached: bool | None = None     # the autopilot's own fence is breached now (FENCE_STATUS)
     fence_breach_count: int | None = None  # breaches the autopilot counted since it booted
+    mission_seq: int | None = None         # mission item flown to now (MISSION_CURRENT); 0 = home, 1 = first waypoint
+
+
+@dataclass(frozen=True)
+class Home:
+    lat: float | None = None       # degrees, WGS84; the autopilot's home (HOME_POSITION)
+    lon: float | None = None
+    alt_msl: float | None = None   # metres above mean sea level
 
 
 @dataclass(frozen=True)
@@ -56,3 +64,4 @@ class DroneTelemetry:
     battery: Battery = field(default_factory=Battery)
     gps: Gps = field(default_factory=Gps)
     status: Status = field(default_factory=Status)
+    home: Home = field(default_factory=Home)

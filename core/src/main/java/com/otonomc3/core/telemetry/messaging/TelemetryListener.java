@@ -6,6 +6,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import com.otonomc3.core.config.RabbitConfig;
+import com.otonomc3.core.mission.service.DroneMissionService;
 import com.otonomc3.core.telemetry.dto.TelemetryMessageDto;
 import com.otonomc3.core.telemetry.service.TelemetryService;
 import com.otonomc3.core.telemetry.service.TelemetryStats;
@@ -39,13 +40,15 @@ public class TelemetryListener {
 	private final TelemetryService service;
 	private final TelemetryStats stats;
 	private final RabbitTemplate rabbitTemplate;
+	private final DroneMissionService droneMissionService;
 
 	public TelemetryListener(JsonMapper jsonMapper, TelemetryService service, TelemetryStats stats,
-			RabbitTemplate rabbitTemplate) {
+			RabbitTemplate rabbitTemplate, DroneMissionService droneMissionService) {
 		this.jsonMapper = jsonMapper;
 		this.service = service;
 		this.stats = stats;
 		this.rabbitTemplate = rabbitTemplate;
+		this.droneMissionService = droneMissionService;
 	}
 
 	@RabbitListener(queues = RabbitConfig.TELEMETRY_QUEUE, containerFactory = RabbitConfig.TELEMETRY_CONTAINER_FACTORY)
@@ -76,6 +79,8 @@ public class TelemetryListener {
 		// Dead-lettered only after the batch is saved: if saving fails, the whole
 		// batch (rejected messages included) is redelivered and nothing is sent twice.
 		rejected.forEach(this::deadLetter);
+		// The drones' progress on their assigned missions; it never throws.
+		droneMissionService.onTelemetry(parsed);
 	}
 
 	/** Returns null, after logging, when the message is not valid schema version 2 JSON. */

@@ -68,6 +68,12 @@ def build_snapshot(telemetry, session_id, seq, timestamp):
             "armed": telemetry.status.armed,
             "fenceBreached": telemetry.status.fence_breached,
             "fenceBreachCount": telemetry.status.fence_breach_count,
+            "missionSeq": telemetry.status.mission_seq,
+        },
+        "home": {
+            "lat": _round(telemetry.home.lat, LATLON_DIGITS),
+            "lon": _round(telemetry.home.lon, LATLON_DIGITS),
+            "altMsl": _round(telemetry.home.alt_msl, ALTITUDE_DIGITS),
         },
     }
 

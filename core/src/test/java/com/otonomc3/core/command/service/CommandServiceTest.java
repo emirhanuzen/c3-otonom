@@ -38,6 +38,10 @@ import com.otonomc3.core.config.SimProperties;
 import com.otonomc3.core.drone.service.DroneLiveState;
 import com.otonomc3.core.drone.service.DroneLiveStateService;
 import com.otonomc3.core.drone.service.DroneNotFoundException;
+import com.otonomc3.core.landing.service.LandingBlockedException;
+import com.otonomc3.core.landing.service.LandingPlan;
+import com.otonomc3.core.landing.service.LandingService;
+import com.otonomc3.core.mission.service.DroneMissionService;
 import com.otonomc3.core.drone.service.LinkStatus;
 import com.otonomc3.core.geofence.service.GeofenceChecker;
 import com.otonomc3.core.geofence.service.GeofenceStatus;
@@ -83,6 +87,13 @@ class CommandServiceTest {
 	@Mock
 	private RouteService routeService;
 
+	/** No assigned mission to upload again unless a test says otherwise. */
+	@Mock
+	private DroneMissionService droneMissionService;
+
+	@Mock
+	private LandingService landingService;
+
 	/** In-memory stand-in for the table, driven by the repository mock. */
 	private final Map<UUID, CommandEntity> table = new HashMap<>();
 	private StepClock clock;
@@ -120,7 +131,8 @@ class CommandServiceTest {
 	}
 
 	private CommandService service(boolean simEnabled) {
-		return new CommandService(repository, publisher, liveStateService, geofenceChecker, routeService, messagingTemplate,
+		return new CommandService(repository, publisher, liveStateService, geofenceChecker, routeService,
+				droneMissionService, landingService, messagingTemplate,
 				eventPublisher, JsonMapper.builder().build(), clock,
 				new CommandProperties(Duration.ofSeconds(12), Duration.ofSeconds(5)), new SimProperties(simEnabled));
 	}
@@ -187,6 +199,82 @@ class CommandServiceTest {
 		assertThatThrownBy(() -> service(false).issue(1, CommandType.ROUTE,
 				Map.of("waypoints", List.of(List.of(38.6, 39.3, 10)))))
 				.isInstanceOf(InvalidCommandException.class).hasMessageContaining("alt between 30 and 500");
+	}
+
+	@Test
+	void resumeMissionWithoutAssignedMissionToReloadStaysAResume() throws Exception {
+		CommandDto command = service(false).issue(1, CommandType.RESUME_MISSION, null);
+
+		assertThat(command.type()).isEqualTo(CommandType.RESUME_MISSION);
+		assertThat(command.params()).isEmpty();
+		verify(droneMissionService).resumeUpload(1);
+	}
+
+	@Test
+	void resumeMissionUploadsTheAssignedMissionAgainFromItsLastSeq() throws Exception {
+		when(droneMissionService.resumeUpload(1)).thenReturn(Optional.of(Map.of(
+				"waypoints", List.of(List.of(38.61, 39.28, 100), List.of(38.62, 39.29, 100), List.of(38.63, 39.30, 120)),
+				"loop", true, "startSeq", 3)));
+
+		CommandDto command = service(false).issue(1, CommandType.RESUME_MISSION, null);
+
+		assertThat(command.type()).isEqualTo(CommandType.MISSION_UPLOAD);
+		assertThat(command.params()).containsEntry("loop", true).containsEntry("startSeq", 3);
+		ArgumentCaptor<CommandMessageDto> message = ArgumentCaptor.forClass(CommandMessageDto.class);
+		verify(publisher).publish(message.capture());
+		assertThat(message.getValue().type()).isEqualTo(CommandType.MISSION_UPLOAD);
+		assertThat(message.getValue().params().get("waypoints")).isEqualTo(
+				List.of(List.of(38.61, 39.28, 100.0), List.of(38.62, 39.29, 100.0), List.of(38.63, 39.30, 120.0)));
+	}
+
+	@Test
+	void landIsPlannedByTheCoreWhateverTheRequestCarried() throws Exception {
+		when(landingService.plan(any())).thenReturn(new LandingPlan(38.6125, 39.285,
+				LandingPlan.HomeSource.AUTOPILOT, 38.6017, 39.285, 60, 0));
+
+		CommandDto command = service(false).issue(1, CommandType.LAND,
+				Map.of("approach", List.of(1, 2, 3), "land", List.of(4, 5)));
+
+		assertThat(command.type()).isEqualTo(CommandType.LAND);
+		assertThat(command.params()).isEqualTo(Map.of("approach", List.of(38.6017, 39.285, 60.0),
+				"land", List.of(38.6125, 39.285)));
+		ArgumentCaptor<CommandMessageDto> message = ArgumentCaptor.forClass(CommandMessageDto.class);
+		verify(publisher).publish(message.capture());
+		assertThat(message.getValue().params()).containsKeys("approach", "land");
+	}
+
+	@Test
+	void blockedLandingIsRefusedAndNotStored() throws Exception {
+		when(landingService.plan(any())).thenThrow(new LandingBlockedException(
+				LandingBlockedException.Reason.APPROACH_BLOCKED, List.of("Şehit Astsubay Kışlası")));
+
+		assertThatThrownBy(() -> service(false).issue(1, CommandType.LAND, null))
+				.isInstanceOf(LandingBlockedException.class)
+				.hasMessage("Yaklaşma bacağı yasak bölgeden geçiyor: Şehit Astsubay Kışlası");
+		verify(publisher, never()).publish(any());
+		assertThat(table).isEmpty();
+	}
+
+	@Test
+	void landIsRefusedOnTheGround() {
+		when(liveStateService.find(1)).thenReturn(Optional.of(state(1, false, 0.0)));
+
+		assertThatThrownBy(() -> service(false).issue(1, CommandType.LAND, null))
+				.isInstanceOf(DroneOnGroundException.class);
+		verify(landingService, never()).plan(any());
+	}
+
+	@Test
+	void missionUploadParamsAreValidated() {
+		List<List<Double>> two = List.of(List.of(38.6, 39.3, 100.0), List.of(38.61, 39.3, 100.0));
+		assertThatThrownBy(() -> service(false).issue(1, CommandType.MISSION_UPLOAD,
+				Map.of("waypoints", two, "startSeq", 3)))
+				.isInstanceOf(InvalidCommandException.class).hasMessageContaining("startSeq must be an integer between 1 and 2");
+		assertThatThrownBy(() -> service(false).issue(1, CommandType.MISSION_UPLOAD,
+				Map.of("waypoints", two, "loop", "yes")))
+				.isInstanceOf(InvalidCommandException.class).hasMessageContaining("loop");
+		assertThat(CommandValidator.validate(CommandType.MISSION_UPLOAD, Map.of("waypoints", two)))
+				.containsEntry("loop", false).containsEntry("startSeq", 1);
 	}
 
 	@Test

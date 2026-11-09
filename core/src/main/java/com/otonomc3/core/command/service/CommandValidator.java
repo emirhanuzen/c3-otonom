@@ -31,7 +31,7 @@ public final class CommandValidator {
 	public static final int FENCE_MIN_VERTICES = 3;
 	public static final int FENCE_MAX_TOTAL_VERTICES = 500;
 	public static final int FENCE_VERSION_MAX_LENGTH = 64;
-	/** ROUTE limit, as in the edge adapter (command.py). */
+	/** ROUTE and MISSION_UPLOAD limit, as in the edge adapter (command.py). */
 	public static final int ROUTE_MAX_WAYPOINTS = 100;
 
 	private CommandValidator() {
@@ -61,7 +61,9 @@ public final class CommandValidator {
 				result.put("enabled", enabled);
 			}
 			case FENCE_UPLOAD -> fenceUpload(source, result);
-			case ROUTE -> result.put("waypoints", routeWaypoints(source));
+			case ROUTE -> result.put("waypoints", routeWaypoints(type, source));
+			case MISSION_UPLOAD -> missionUpload(source, result);
+			case LAND -> land(source, result);
 			case FAULT_LINK_DROP -> result.put("seconds",
 					number(type, source, "seconds", LINK_DROP_MIN_SECONDS, LINK_DROP_MAX_SECONDS));
 			default -> {
@@ -114,9 +116,58 @@ public final class CommandValidator {
 		result.put("polygons", normalized);
 	}
 
+	/**
+	 * waypoints as for ROUTE, loop (a boolean, false when missing) and startSeq (an integer
+	 * 1..number of waypoints, 1 when missing) as an Integer.
+	 */
+	private static void missionUpload(Map<String, Object> source, Map<String, Object> result) {
+		CommandType type = CommandType.MISSION_UPLOAD;
+		List<List<Double>> waypoints = routeWaypoints(type, source);
+		Object loop = source.get("loop");
+		if (loop != null && !(loop instanceof Boolean)) {
+			throw new InvalidCommandException(type + ": loop must be true or false, was " + loop);
+		}
+		Object startSeq = source.get("startSeq");
+		int start = 1;
+		if (startSeq != null) {
+			if (!(startSeq instanceof Number number) || number.doubleValue() != Math.rint(number.doubleValue())
+					|| number.doubleValue() < 1 || number.doubleValue() > waypoints.size()) {
+				throw new InvalidCommandException(type + ": startSeq must be an integer between 1 and "
+						+ waypoints.size() + ", was " + startSeq);
+			}
+			start = number.intValue();
+		}
+		result.put("waypoints", waypoints);
+		result.put("loop", Boolean.TRUE.equals(loop));
+		result.put("startSeq", start);
+	}
+
+	/** approach as [lat, lon, alt] (alt 0..500 m above home) and land as [lat, lon], Doubles. */
+	private static void land(Map<String, Object> source, Map<String, Object> result) {
+		CommandType type = CommandType.LAND;
+		Object approach = source.get("approach");
+		if (!(approach instanceof List<?> point) || point.size() != 3 || !(point.get(0) instanceof Number lat)
+				|| !(point.get(1) instanceof Number lon) || !(point.get(2) instanceof Number alt)
+				|| !isLatLon(lat.doubleValue(), lon.doubleValue()) || !Double.isFinite(alt.doubleValue())
+				|| alt.doubleValue() < 0 || alt.doubleValue() > GOTO_MAX_ALT) {
+			throw new InvalidCommandException(type + ": approach must be [lat, lon, alt] with alt between 0 and "
+					+ format(GOTO_MAX_ALT) + ", was " + approach);
+		}
+		Object land = source.get("land");
+		if (!(land instanceof List<?> pair) || pair.size() != 2 || !(pair.get(0) instanceof Number landLat)
+				|| !(pair.get(1) instanceof Number landLon) || !isLatLon(landLat.doubleValue(), landLon.doubleValue())) {
+			throw new InvalidCommandException(type + ": land must be [lat, lon], was " + land);
+		}
+		result.put("approach", List.of(lat.doubleValue(), lon.doubleValue(), alt.doubleValue()));
+		result.put("land", List.of(landLat.doubleValue(), landLon.doubleValue()));
+	}
+
+	private static boolean isLatLon(double lat, double lon) {
+		return Double.isFinite(lat) && Double.isFinite(lon) && Math.abs(lat) <= 90 && Math.abs(lon) <= 180;
+	}
+
 	/** waypoints as [lat, lon, alt] Double triples; alt as for GOTO (30..500 m above home). */
-	private static List<List<Double>> routeWaypoints(Map<String, Object> source) {
-		CommandType type = CommandType.ROUTE;
+	private static List<List<Double>> routeWaypoints(CommandType type, Map<String, Object> source) {
 		if (!(source.get("waypoints") instanceof List<?> waypoints) || waypoints.isEmpty()
 				|| waypoints.size() > ROUTE_MAX_WAYPOINTS) {
 			throw new InvalidCommandException(type + ": waypoints (1 to " + ROUTE_MAX_WAYPOINTS

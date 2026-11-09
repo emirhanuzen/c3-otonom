@@ -7,6 +7,7 @@ import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
@@ -26,6 +27,8 @@ import com.otonomc3.core.drone.service.DroneNotFoundException;
 import com.otonomc3.core.drone.service.LinkStatus;
 import com.otonomc3.core.geofence.service.GeofenceChecker;
 import com.otonomc3.core.geofence.service.GeofenceStatus;
+import com.otonomc3.core.landing.service.LandingService;
+import com.otonomc3.core.mission.service.DroneMissionService;
 import com.otonomc3.core.route.service.RouteBlockedException;
 import com.otonomc3.core.route.service.RoutePlan;
 import com.otonomc3.core.route.service.RouteService;
@@ -70,6 +73,8 @@ public class CommandService {
 	private final DroneLiveStateService liveStateService;
 	private final GeofenceChecker geofenceChecker;
 	private final RouteService routeService;
+	private final DroneMissionService droneMissionService;
+	private final LandingService landingService;
 	private final SimpMessageSendingOperations messagingTemplate;
 	private final ApplicationEventPublisher eventPublisher;
 	private final JsonMapper jsonMapper;
@@ -79,6 +84,7 @@ public class CommandService {
 
 	public CommandService(CommandRepository repository, CommandPublisher publisher,
 			DroneLiveStateService liveStateService, GeofenceChecker geofenceChecker, RouteService routeService,
+			DroneMissionService droneMissionService, LandingService landingService,
 			SimpMessageSendingOperations messagingTemplate, ApplicationEventPublisher eventPublisher,
 			JsonMapper jsonMapper, Clock clock, CommandProperties properties, SimProperties simProperties) {
 		this.repository = repository;
@@ -86,6 +92,8 @@ public class CommandService {
 		this.liveStateService = liveStateService;
 		this.geofenceChecker = geofenceChecker;
 		this.routeService = routeService;
+		this.droneMissionService = droneMissionService;
+		this.landingService = landingService;
 		this.messagingTemplate = messagingTemplate;
 		this.eventPublisher = eventPublisher;
 		this.jsonMapper = jsonMapper;
@@ -110,10 +118,17 @@ public class CommandService {
 	 * @throws TakeoffInNoFlyZoneException for TAKEOFF while the drone is inside an effective no-fly zone
 	 * @throws RouteBlockedException    for GOTO when no safe route to the target exists; a GOTO whose
 	 *                                  straight line crosses a zone is sent as a ROUTE around it
+	 *
+	 * <p>LAND is planned by the core (LandingService): its params are the approach and the home,
+	 * whatever the request carried; it throws LandingBlockedException (409) when no safe landing exists.
+	 *
+	 * <p>A RESUME_MISSION of a drone whose assigned mission is not on board (a ROUTE or GOTO came
+	 * after it) is sent as a MISSION_UPLOAD of that mission from its last known item instead.
 	 */
 	public CommandDto issue(int droneId, CommandType requestedType, Map<String, Object> rawParams) {
 		CommandType type = requestedType;
-		Map<String, Object> params = CommandValidator.validate(type, rawParams);
+		// A LAND's params are planned below; what the request carried is not used.
+		Map<String, Object> params = type == CommandType.LAND ? Map.of() : CommandValidator.validate(type, rawParams);
 		if (type.isSimFault() && !simEnabled) {
 			throw new SimDisabledException(type);
 		}
@@ -138,6 +153,17 @@ public class CommandService {
 						route.avoidedZones(), route.waypoints().size(), Math.round(route.distanceM()));
 				type = CommandType.ROUTE;
 				params = CommandValidator.validate(type, Map.of("waypoints", withAltitude(route, (Double) params.get("alt"))));
+			}
+		}
+		if (type == CommandType.LAND) {
+			// Whatever the request carried: the landing is planned now, from the drone's home and the zones.
+			params = CommandValidator.validate(type, landingService.plan(state).params());
+		}
+		if (type == CommandType.RESUME_MISSION) {
+			Optional<Map<String, Object>> upload = droneMissionService.resumeUpload(droneId);
+			if (upload.isPresent()) {
+				type = CommandType.MISSION_UPLOAD;
+				params = CommandValidator.validate(type, upload.get());
 			}
 		}
 

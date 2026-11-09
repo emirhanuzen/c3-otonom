@@ -48,6 +48,8 @@ public class DroneLiveStateService {
 	private final AtomicLong maxFutureSkewMs = new AtomicLong();
 
 	private final Map<Integer, Entry> states = new ConcurrentHashMap<>();
+	/** droneId -> the first position of its current adapter session at which it stood on the ground. */
+	private final Map<Integer, GroundPosition> groundPositions = new ConcurrentHashMap<>();
 
 	public DroneLiveStateService(Clock clock, LiveProperties properties) {
 		this.clock = clock;
@@ -86,7 +88,43 @@ public class DroneLiveStateService {
 			accepted[0] = true;
 			return new Entry(message, receivedAt);
 		});
+		if (accepted[0]) {
+			rememberGroundPosition(message);
+		}
 		return accepted[0];
+	}
+
+	/**
+	 * The first position the drone reported while on the ground (disarmed, or below
+	 * {@link #GROUND_ALT_REL_M} relative altitude) in its current adapter session: where it took
+	 * off, the home when the autopilot's own (HOME_POSITION) is unknown. Empty when the core has
+	 * only seen it in the air.
+	 */
+	public Optional<double[]> firstGroundPosition(int droneId) {
+		GroundPosition position = groundPositions.get(droneId);
+		return position == null ? Optional.empty() : Optional.of(new double[] { position.lat(), position.lon() });
+	}
+
+	/** Below this relative altitude (m) a position counts as on the ground, like CommandValidator.MIN_AIRBORNE_ALT_REL. */
+	static final double GROUND_ALT_REL_M = 10;
+
+	private void rememberGroundPosition(TelemetryMessageDto message) {
+		TelemetryMessageDto.Position position = message.position();
+		if (position == null || position.lat() == null || position.lon() == null) {
+			return;
+		}
+		Boolean armed = message.status() == null ? null : message.status().armed();
+		boolean onGround = Boolean.FALSE.equals(armed)
+				|| (position.altRel() != null && position.altRel() < GROUND_ALT_REL_M);
+		if (!onGround) {
+			return;
+		}
+		groundPositions.compute(message.droneId(), (droneId, current) ->
+				current != null && current.sessionId().equals(message.sessionId()) ? current
+						: new GroundPosition(message.sessionId(), position.lat(), position.lon()));
+	}
+
+	private record GroundPosition(java.util.UUID sessionId, double lat, double lon) {
 	}
 
 	public Optional<DroneLiveState> find(int droneId) {

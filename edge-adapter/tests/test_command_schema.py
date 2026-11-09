@@ -97,6 +97,25 @@ def test_route_params_are_normalized():
     assert command.params == {"waypoints": [(38.61, 39.28, 120.0), (38.6, 39.29, 100.5)]}
 
 
+def test_mission_upload_params_are_normalized():
+    command = parse_command(body(type="MISSION_UPLOAD", params={
+        "waypoints": [[38.61, 39.28, 120], [38.6, 39.29, 100.5]], "loop": True, "startSeq": 2.0}))
+    assert command.type is CommandType.MISSION_UPLOAD
+    assert command.params == {"waypoints": [(38.61, 39.28, 120.0), (38.6, 39.29, 100.5)], "loop": True, "startSeq": 2}
+
+
+def test_mission_upload_defaults_to_no_loop_from_item_1():
+    command = parse_command(body(type="MISSION_UPLOAD", params={"waypoints": [[38.61, 39.28, 120]]}))
+    assert command.params["loop"] is False
+    assert command.params["startSeq"] == 1
+
+
+def test_land_params_are_normalized():
+    command = parse_command(body(type="LAND", params={"approach": [38.6017, 39.285, 60], "land": [38.6125, 39.285]}))
+    assert command.type is CommandType.LAND
+    assert command.params == {"approach": (38.6017, 39.285, 60.0), "land": (38.6125, 39.285)}
+
+
 def test_extra_params_are_ignored():
     command = parse_command(body(type="FAULT_GPS_LOSS", params={"enabled": True, "note": "x"}))
     assert command.params == {"enabled": True}
@@ -126,6 +145,18 @@ def test_extra_params_are_ignored():
     ("ROUTE", {"waypoints": [[91, 39.3, 100]]}),
     ("ROUTE", {"waypoints": [[38.6, 39.3, True]]}),
     ("ROUTE", {"waypoints": [[38.6, 39.3, 100]] * 101}),
+    ("LAND", {}),
+    ("LAND", {"approach": [38.6, 39.3], "land": [38.6, 39.3]}),
+    ("LAND", {"approach": [38.6, 39.3, -1], "land": [38.6, 39.3]}),
+    ("LAND", {"approach": [38.6, 39.3, 60]}),
+    ("LAND", {"approach": [38.6, 39.3, 60], "land": [91, 39.3]}),
+    ("MISSION_UPLOAD", {}),
+    ("MISSION_UPLOAD", {"waypoints": [[38.6, 39.3, 100]] * 101}),
+    ("MISSION_UPLOAD", {"waypoints": [[38.6, 39.3, 100]], "loop": 1}),
+    ("MISSION_UPLOAD", {"waypoints": [[38.6, 39.3, 100]] * 2, "startSeq": 0}),
+    ("MISSION_UPLOAD", {"waypoints": [[38.6, 39.3, 100]] * 2, "startSeq": 3}),
+    ("MISSION_UPLOAD", {"waypoints": [[38.6, 39.3, 100]] * 2, "startSeq": 1.5}),
+    ("MISSION_UPLOAD", {"waypoints": [[38.6, 39.3, 100]] * 2, "startSeq": True}),
     ("FENCE_UPLOAD", {"action": "RTL", "polygons": []}),       # version missing
     ("FENCE_UPLOAD", {"version": "", "action": "RTL", "polygons": []}),
     ("FENCE_UPLOAD", {"version": "v", "action": "LAND", "polygons": []}),

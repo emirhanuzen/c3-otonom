@@ -13,6 +13,8 @@
 	const HISTORY_SIZE = 20;
 	const RECONNECT_DELAY_MS = 2000;
 	const LINK_DROP_SECONDS = [5, 15, 30];
+	/** In FAULT_RESET's detail when the autopilot refused the battery reset (edge adapter, command_executor.py). */
+	const BATTERY_RESET_NOT_SUPPORTED = 'battery reset not supported';
 
 	const LINK_LABELS = {
 		ONLINE: 'Çevrimiçi',
@@ -203,6 +205,10 @@
 			prepend(item.row);
 		}
 		item.status = command.status;
+		// The adapter's FAULT_RESET says so when the autopilot refused MAV_CMD_BATTERY_RESET.
+		if (command.type === 'FAULT_RESET' && command.status === 'ACCEPTED') {
+			document.getElementById('battery-note').hidden = !command.detail?.includes(BATTERY_RESET_NOT_SUPPORTED);
+		}
 		fillHistoryRow(item.row, command.issuedAt, command.droneId, Commands.typeLabel(command),
 			Commands.statusClass(command.status), Commands.statusLabel(command.status), command.detail);
 	}

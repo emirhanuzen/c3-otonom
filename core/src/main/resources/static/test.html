@@ -20,7 +20,10 @@
 
 		<section id="fleet" hidden>
 			<h2>İHA'lar ve arıza komutları</h2>
-			<p class="hint">Arızalar SITL parametrelerini değiştirir. Komutlar yalnızca çevrimiçi İHA'lara gönderilebilir.</p>
+			<p class="hint">Arızalar SITL parametrelerini değiştirir. Komutlar yalnızca çevrimiçi İHA'lara gönderilebilir.
+				"Sıfırla" arızaları geri alır ve bataryayı %100'e doldurur (MAV_CMD_BATTERY_RESET).</p>
+			<p class="hint battery-note" id="battery-note" hidden>Bu otopilot batarya sıfırlamayı desteklemiyor:
+				batarya kapasitesi 10 Ah'ye çekildi ama mevcut şarj dolmadı. SITL yeniden başlatılınca batarya dolar.</p>
 			<div class="table-wrap">
 				<table class="fleet-table">
 					<thead>

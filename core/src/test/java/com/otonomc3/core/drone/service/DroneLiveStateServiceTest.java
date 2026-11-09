@@ -201,6 +201,38 @@ class DroneLiveStateServiceTest {
 		return service.find(droneId).orElseThrow().linkStatus();
 	}
 
+	// --- first position on the ground (LAND's home when the autopilot's is unknown) --------
+
+	@Test
+	void firstPositionOnTheGroundOfTheSessionIsKept() {
+		assertThat(service.firstGroundPosition(1)).isEmpty();
+		service.update(located(SESSION, 1, T0, 38.70, 39.30, 120.0, true));        // in the air: not a home
+		assertThat(service.firstGroundPosition(1)).isEmpty();
+
+		clock.set(T0.plusSeconds(1));
+		service.update(located(SESSION, 2, T0.plusSeconds(1), 38.61, 39.28, 0.4, false));
+		clock.set(T0.plusSeconds(2));
+		service.update(located(SESSION, 3, T0.plusSeconds(2), 38.62, 39.29, 3.0, true));   // still low, later
+
+		assertThat(service.firstGroundPosition(1)).get().satisfies(p -> assertThat(p).containsExactly(38.61, 39.28));
+	}
+
+	@Test
+	void newSessionStartsFromItsOwnFirstGroundPosition() {
+		service.update(located(SESSION, 1, T0, 38.61, 39.28, 0.0, false));
+		clock.set(T0.plusSeconds(1));
+		service.update(located(OTHER_SESSION, 1, T0.plusSeconds(1), 38.65, 39.31, 0.0, false));
+
+		assertThat(service.firstGroundPosition(1)).get().satisfies(p -> assertThat(p).containsExactly(38.65, 39.31));
+	}
+
+	private static TelemetryMessageDto located(UUID sessionId, long seq, Instant timestamp, double lat, double lon,
+			double altRel, boolean armed) {
+		return new TelemetryMessageDto(2, sessionId, 1, seq, timestamp,
+				new TelemetryMessageDto.Position(lat, lon, 1000.0 + altRel, altRel, 0.0), null, null, null,
+				new TelemetryMessageDto.Status("MANUAL", armed));
+	}
+
 	private static TelemetryMessageDto message(int droneId, UUID sessionId, long seq, Instant timestamp) {
 		return new TelemetryMessageDto(2, sessionId, droneId, seq, timestamp, null, null, null, null, null);
 	}

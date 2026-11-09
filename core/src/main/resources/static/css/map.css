@@ -143,10 +143,14 @@ body {
 
 /* --- Panel ------------------------------------------------------------------- */
 
+/* At most 320 px wide; taller than the screen, it scrolls inside (the map does not get its wheel). */
 .drone-panel {
+	box-sizing: border-box;
 	min-width: 190px;
-	max-height: 60vh;
+	max-width: 320px;
+	max-height: calc(100vh - 24px);
 	overflow-y: auto;
+	overscroll-behavior: contain;
 	padding: 8px 10px;
 	border-radius: 6px;
 	background: var(--panel-bg);
@@ -156,11 +160,9 @@ body {
 
 .connection {
 	display: flex;
+	flex: 1;
 	align-items: center;
 	gap: 6px;
-	padding-bottom: 6px;
-	margin-bottom: 6px;
-	border-bottom: 1px solid #e3e6ea;
 	font-size: 12px;
 }
 
@@ -961,4 +963,448 @@ body {
 
 .coordinate-hint {
 	color: var(--accent);
+}
+
+/* --- Missions (missions.js) ----------------------------------------------------- */
+
+.mission-controls {
+	margin-top: 8px;
+	padding-top: 6px;
+	border-top: 1px solid #e3e6ea;
+}
+
+.mission-controls [hidden] {
+	display: none;
+}
+
+.mission-list {
+	margin: 0 0 6px;
+	padding: 0;
+	list-style: none;
+	max-height: 140px;
+	overflow-y: auto;
+}
+
+.mission-list li {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 3px 4px;
+	border-radius: 4px;
+	cursor: pointer;
+}
+
+.mission-list li:hover {
+	background: #eef1f4;
+}
+
+.mission-list li.selected {
+	background: #e3edfd;
+}
+
+.mission-list .name {
+	flex: 1;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.mission-list .meta {
+	color: var(--muted);
+	font-size: 11px;
+}
+
+.mission-list .swatch {
+	flex: none;
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+}
+
+.mission-list .empty {
+	color: var(--muted);
+	cursor: default;
+}
+
+.mission-list .empty:hover {
+	background: none;
+}
+
+.mission-actions,
+.mission-move-buttons,
+.mission-buttons,
+.mission-assign {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	gap: 4px;
+	margin-top: 4px;
+}
+
+.mission-controls button,
+.mission-point-panel button {
+	padding: 4px 6px;
+	border: 1px solid #c9ced4;
+	border-radius: 4px;
+	background: #fff;
+	font: inherit;
+	font-size: 12px;
+	cursor: pointer;
+}
+
+.mission-controls button:hover:not(:disabled),
+.mission-point-panel button:hover:not(:disabled) {
+	background: #eef1f4;
+}
+
+.mission-controls button:disabled {
+	cursor: default;
+	opacity: 0.5;
+}
+
+.mission-editor {
+	margin-top: 6px;
+	padding: 6px;
+	border: 1px solid #c9ced4;
+	border-radius: 4px;
+	background: #fafbfc;
+}
+
+.mission-name {
+	box-sizing: border-box;
+	width: 100%;
+	padding: 3px 6px;
+	border: 1px solid #c9ced4;
+	border-radius: 4px;
+	font: inherit;
+	font-size: 12px;
+}
+
+.mission-summary {
+	margin: 4px 0;
+	font-size: 12px;
+	color: var(--muted);
+}
+
+.mission-summary.ok { color: var(--online); }
+.mission-summary.blocked { color: var(--critical); }
+
+.mission-hint {
+	padding: 4px 6px;
+	border-radius: 4px;
+	background: #e3edfd;
+	font-size: 11px;
+}
+
+.mission-assign select {
+	font: inherit;
+	font-size: 12px;
+	min-width: 0;
+}
+
+.mission-controls .mission-save,
+.mission-controls .mission-assign-button {
+	font-weight: 600;
+}
+
+.mission-controls .mission-delete,
+.mission-point-panel .danger-outline {
+	border-color: var(--critical);
+	color: var(--critical);
+}
+
+.mission-confirm {
+	margin-top: 6px;
+	padding: 6px;
+	border: 1px solid var(--accent);
+	border-radius: 4px;
+	background: #f5f9ff;
+	font-size: 12px;
+}
+
+.mission-confirm .confirm-yes {
+	border-color: var(--accent);
+	background: var(--accent);
+	color: #fff;
+}
+
+.mission-confirm .confirm-yes:hover:not(:disabled) {
+	background: #1a5fcc;
+}
+
+.mission-error,
+.mission-point-error {
+	margin-top: 6px;
+	color: var(--critical);
+	font-size: 12px;
+	white-space: pre-line;
+}
+
+.mission-info {
+	margin-top: 6px;
+	color: var(--online);
+	font-size: 12px;
+}
+
+.leaflet-container.editing-mission {
+	cursor: crosshair;
+}
+
+/* Numbered waypoint; .in-zone adds the red ring of a waypoint inside a no-fly zone. */
+.mission-point-marker {
+	background: none;
+	border: none;
+}
+
+.mission-point {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	box-sizing: border-box;
+	width: 22px;
+	height: 22px;
+	border: 2px solid #1f2933;
+	border-radius: 50%;
+	background: #fff;
+	color: #1f2933;
+	font-size: 11px;
+	font-weight: 700;
+	cursor: grab;
+	box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+}
+
+.mission-point.in-zone {
+	box-shadow: 0 0 0 3px #fff, 0 0 0 6px var(--critical);
+}
+
+.mission-point-panel h3 {
+	margin: 0 0 6px;
+	font-size: 13px;
+}
+
+.mission-point-panel label {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	font-size: 12px;
+}
+
+.mission-point-panel input {
+	width: 64px;
+	font: inherit;
+}
+
+.mission-point-actions {
+	display: flex;
+	gap: 4px;
+	margin-top: 6px;
+}
+
+.mission-controls .mission-move.active {
+	border-color: var(--accent);
+	background: var(--accent);
+	color: #fff;
+}
+
+/* Moving a mission: only the mission is a handle; the empty map keeps Leaflet's pan cursor. */
+.leaflet-container.editing-mission.moving-mission {
+	cursor: grab;
+}
+
+.leaflet-container.moving-mission .mission-point {
+	cursor: move;
+}
+
+/* --- Panel sections (accordion) and the minimized strip ----------------------------- */
+
+.panel-top {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding-bottom: 6px;
+	margin-bottom: 2px;
+	border-bottom: 1px solid #e3e6ea;
+}
+
+.panel-minimize {
+	flex: none;
+	width: 24px;
+	height: 22px;
+	padding: 0;
+	border: 1px solid #c9ced4;
+	border-radius: 4px;
+	background: #fff;
+	font: inherit;
+	font-size: 15px;
+	line-height: 1;
+	cursor: pointer;
+}
+
+.panel-minimize:hover {
+	background: #eef1f4;
+}
+
+.panel-section {
+	margin-top: 6px;
+	padding-top: 4px;
+	border-top: 1px solid #e3e6ea;
+}
+
+.panel-section:first-of-type {
+	border-top: none;
+}
+
+.section-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	width: 100%;
+	margin: 0 0 4px;
+	padding: 2px 0;
+	border: none;
+	background: none;
+	color: inherit;
+	font: inherit;
+	font-size: 13px;
+	font-weight: 700;
+	text-align: left;
+	cursor: pointer;
+}
+
+.section-header:hover .section-title {
+	color: var(--accent);
+}
+
+.section-header:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 1px;
+}
+
+.section-chevron::before {
+	content: "";
+	display: inline-block;
+	width: 6px;
+	height: 6px;
+	border-right: 2px solid var(--muted);
+	border-bottom: 2px solid var(--muted);
+	transform: rotate(45deg);
+	transition: transform 0.15s;
+}
+
+.panel-section.collapsed .section-chevron::before {
+	transform: rotate(-45deg);
+}
+
+.panel-section.collapsed .section-header {
+	margin-bottom: 0;
+}
+
+.panel-section.collapsed .section-body {
+	display: none;
+}
+
+/* Minimized: a narrow strip at the right edge with only the button that opens it again. */
+.drone-panel.minimized {
+	min-width: 0;
+	width: 36px;
+	padding: 6px;
+	overflow: hidden;
+}
+
+.drone-panel.minimized .panel-top {
+	padding: 0;
+	margin: 0;
+	border: none;
+}
+
+.drone-panel.minimized .connection,
+.drone-panel.minimized .panel-section {
+	display: none;
+}
+
+/* --- Mission launch ----------------------------------------------------------------- */
+
+.mission-assign select {
+	grid-column: 1 / -1;
+}
+
+.mission-controls .mission-launch-button {
+	grid-column: 1 / -1;
+	border-color: var(--online);
+	background: var(--online);
+	color: #fff;
+	font-weight: 600;
+}
+
+.mission-controls .mission-launch-button:hover:not(:disabled) {
+	background: #198049;
+}
+
+.mission-list .mission-item-launch {
+	flex: none;
+	padding: 1px 6px;
+	font-size: 11px;
+}
+
+.mission-list li.mission-launch-row {
+	display: block;
+	margin: 0 0 4px;
+	padding: 6px;
+	border: 1px solid var(--accent);
+	border-radius: 4px;
+	background: #f5f9ff;
+	cursor: default;
+}
+
+.mission-list li.mission-launch-row:hover {
+	background: #f5f9ff;
+}
+
+.mission-launch-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px;
+}
+
+.mission-launch-actions select {
+	flex: 1;
+	min-width: 0;
+	font: inherit;
+	font-size: 12px;
+}
+
+.mission-launch-text {
+	margin-bottom: 6px;
+	font-size: 12px;
+}
+
+.mission-controls .confirm-yes {
+	border-color: var(--accent);
+	background: var(--accent);
+	color: #fff;
+}
+
+.mission-controls .suggested {
+	margin-top: 4px;
+	border-color: var(--warning);
+	box-shadow: 0 0 0 2px rgba(230, 119, 0, 0.35);
+	font-weight: 600;
+}
+
+/* --- Disabled mission buttons say why; landing ----------------------------------------- */
+
+.mission-reason {
+	margin-top: 3px;
+	color: var(--muted);
+	font-size: 11px;
+	line-height: 1.3;
+}
+
+.leaflet-container.moving-mission .leaflet-interactive {
+	cursor: move;
+}
+
+.command-buttons .land-button:not(:disabled) {
+	border-color: var(--accent);
+	color: var(--accent);
+	font-weight: 600;
 }

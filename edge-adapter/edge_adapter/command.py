@@ -21,6 +21,13 @@ class CommandType(enum.Enum):
     # params: waypoints ([[lat, lon, alt], ...], alt in metres above home, the last one is the
     # target); uploaded as the mission (replacing the one on the aircraft) and flown in AUTO.
     ROUTE = "ROUTE"
+    # params: waypoints (as for ROUTE), loop (true: DO_JUMP back to the first waypoint, default false),
+    # startSeq (the mission item flown first, 1..len(waypoints), default 1); uploaded as the mission
+    # (replacing the one on the aircraft) and flown in AUTO from startSeq.
+    MISSION_UPLOAD = "MISSION_UPLOAD"
+    # params: approach ([lat, lon, alt], alt in metres above home), land ([lat, lon]); uploaded as the
+    # mission [home, DO_LAND_START, approach waypoint, NAV_LAND] and flown in AUTO from DO_LAND_START.
+    LAND = "LAND"
     TAKEOFF = "TAKEOFF"                          # params: alt (30..300 m above home, default 60)
     DISARM = "DISARM"                            # stop the motors; refused by the autopilot in flight
     # params: version, action ("RTL" | "REPORT"), polygons ([[[lat, lon], ...], ...]);
@@ -109,6 +116,12 @@ def validate_params(command_type, params):
     if command_type is CommandType.ROUTE:
         return _route(params)
 
+    if command_type is CommandType.MISSION_UPLOAD:
+        return _mission_upload(params)
+
+    if command_type is CommandType.LAND:
+        return _land(params)
+
     if command_type is CommandType.FAULT_GPS_LOSS:
         enabled = params.get("enabled")
         if not isinstance(enabled, bool):
@@ -170,6 +183,33 @@ def _route(params):
             raise InvalidParams(f"waypoints[{i}] alt must not be negative, was {alt}")
         result.append((lat, lon, alt))
     return {"waypoints": result}
+
+
+def _mission_upload(params):
+    waypoints = _route(params)["waypoints"]
+    loop = params.get("loop", False)
+    if not isinstance(loop, bool):
+        raise InvalidParams("loop must be true or false")
+    start_seq = params.get("startSeq", 1)
+    # An integral float (3.0) is accepted, like the other numbers of the contract.
+    if (isinstance(start_seq, bool) or not isinstance(start_seq, (int, float)) or not math.isfinite(start_seq)
+            or start_seq != int(start_seq) or not 1 <= start_seq <= len(waypoints)):
+        raise InvalidParams(f"startSeq must be an integer between 1 and {len(waypoints)}, was {start_seq!r}")
+    return {"waypoints": waypoints, "loop": loop, "startSeq": int(start_seq)}
+
+
+def _land(params):
+    approach = params.get("approach")
+    if (not isinstance(approach, list) or len(approach) != 3
+            or any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) for v in approach)):
+        raise InvalidParams("approach must be [lat, lon, alt]")
+    lat, lon, alt = (float(v) for v in approach)
+    if not -90 <= lat <= 90 or not -180 <= lon <= 180:
+        raise InvalidParams(f"approach is out of range: [{lat}, {lon}]")
+    if alt < 0:
+        raise InvalidParams(f"approach alt must not be negative, was {alt}")
+    land = _vertex(params.get("land"), "land")
+    return {"approach": (lat, lon, alt), "land": land}
 
 
 def _vertex(value, name):

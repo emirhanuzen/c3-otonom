@@ -4,7 +4,7 @@ import json
 from datetime import datetime, timedelta, timezone
 
 from edge_adapter.schema import SCHEMA_VERSION, build_snapshot, to_json
-from edge_adapter.telemetry import Battery, DroneTelemetry, Gps, Position, Status, Velocity
+from edge_adapter.telemetry import Battery, DroneTelemetry, Gps, Home, Position, Status, Velocity
 
 TIMESTAMP = datetime(2026, 10, 24, 12, 34, 56, 789123, tzinfo=timezone.utc)
 SESSION_ID = "0b6f1c2e-5d4a-4e8b-9a37-2f1d6c8e4b90"
@@ -35,7 +35,7 @@ def test_top_level_fields():
     assert snap["seq"] == 42
     assert snap["timestamp"] == "2026-10-24T12:34:56.789Z"
     assert set(snap) == {"schemaVersion", "droneId", "sessionId", "seq", "timestamp",
-                         "position", "velocity", "battery", "gps", "status"}
+                         "position", "velocity", "battery", "gps", "status", "home"}
 
 
 def test_timestamp_is_converted_to_utc():
@@ -56,7 +56,7 @@ def test_values_are_rounded():
     assert snap["velocity"] == {"groundSpeed": 22.12, "airSpeed": 21.88, "climbRate": -0.33}
     assert snap["battery"] == {"percent": 97, "voltage": 12.59}
     assert snap["gps"] == {"fixType": 3, "satellites": 10}
-    assert snap["status"] == {"mode": "AUTO", "armed": True, "fenceBreached": None, "fenceBreachCount": None}
+    assert snap["status"] == {"mode": "AUTO", "armed": True, "fenceBreached": None, "fenceBreachCount": None, "missionSeq": None}
 
 
 def test_unknown_values_are_null():
@@ -66,17 +66,28 @@ def test_unknown_values_are_null():
     assert snap["velocity"] == {"groundSpeed": None, "airSpeed": None, "climbRate": None}
     assert snap["battery"] == {"percent": None, "voltage": None}
     assert snap["gps"] == {"fixType": None, "satellites": None}
-    assert snap["status"] == {"mode": None, "armed": None, "fenceBreached": None, "fenceBreachCount": None}
+    assert snap["status"] == {"mode": None, "armed": None, "fenceBreached": None, "fenceBreachCount": None, "missionSeq": None}
     # null in the JSON text itself, not just a missing key.
     assert b'"lat":null' in to_json(build_snapshot(DroneTelemetry(drone_id=7), SESSION_ID, 0, TIMESTAMP))
 
 
 def test_armed_false_is_not_null():
     snap = snapshot_of(DroneTelemetry(drone_id=1, status=Status(mode="MANUAL", armed=False)))
-    assert snap["status"] == {"mode": "MANUAL", "armed": False, "fenceBreached": None, "fenceBreachCount": None}
+    assert snap["status"] == {"mode": "MANUAL", "armed": False, "fenceBreached": None, "fenceBreachCount": None, "missionSeq": None}
 
 
 def test_fence_status_fields():
     snap = snapshot_of(DroneTelemetry(drone_id=1, status=Status(
         mode="RTL", armed=True, fence_breached=True, fence_breach_count=2)))
-    assert snap["status"] == {"mode": "RTL", "armed": True, "fenceBreached": True, "fenceBreachCount": 2}
+    assert snap["status"] == {"mode": "RTL", "armed": True, "fenceBreached": True, "fenceBreachCount": 2, "missionSeq": None}
+
+
+def test_mission_seq():
+    snap = snapshot_of(DroneTelemetry(drone_id=3, status=Status(mode="AUTO", armed=True, mission_seq=4)))
+    assert snap["status"]["missionSeq"] == 4
+
+
+def test_home_is_null_until_known_and_rounded_after():
+    assert snapshot_of(DroneTelemetry(drone_id=3))["home"] == {"lat": None, "lon": None, "altMsl": None}
+    snap = snapshot_of(DroneTelemetry(drone_id=3, home=Home(lat=38.612500012, lon=39.2850000049, alt_msl=1010.556)))
+    assert snap["home"] == {"lat": 38.6125, "lon": 39.285, "altMsl": 1010.56}

@@ -101,6 +101,30 @@ public class RoutePlanner {
 		return new RoutePlan(false, waypoints, distance, crossed.stream().map(Named::name).distinct().toList());
 	}
 
+	/**
+	 * Checks the straight leg from start to target against the zones, in the same plane and with
+	 * the same widened obstacles as {@link #plan}: a leg this calls clear is what plan() would fly
+	 * as a direct route. Used by mission validation.
+	 */
+	public LegCheck checkLeg(double startLat, double startLon, double targetLat, double targetLon,
+			List<RouteObstacle> zones) {
+		LocalProjection projection = new LocalProjection(startLat, startLon);
+		Coordinate start = projection.toLocal(startLat, startLon);
+		Coordinate target = projection.toLocal(targetLat, targetLon);
+		Point startPoint = GEOMETRY.createPoint(start);
+		Point targetPoint = GEOMETRY.createPoint(target);
+		List<Named> widened = zones.stream().map(zone -> widen(zone, projection)).toList();
+		LineString straight = GEOMETRY.createLineString(new Coordinate[] { start, target });
+		List<String> crossed = widened.stream()
+				.filter(zone -> zone.area().intersects(straight))
+				.sorted(Comparator.comparingDouble(zone -> zone.area().distance(startPoint)))
+				.map(Named::name)
+				.distinct()
+				.toList();
+		return new LegCheck(crossed, names(widened, zone -> zone.area().covers(startPoint)),
+				names(widened, zone -> zone.area().covers(targetPoint)));
+	}
+
 	/** The zone in the local plane, widened by the clearance, simplified, without holes. */
 	private Named widen(RouteObstacle zone, LocalProjection projection) {
 		Coordinate[] shell = Arrays.stream(zone.area().getExteriorRing().getCoordinates())

@@ -383,12 +383,30 @@ def test_reset_restores_everything_and_cancels_link_drop(executor, reader):
     executor.on_mavlink(DRONE, param_value("SIM_GPS1_ENABLE", 0))   # answer to the lookup
     executor.on_mavlink(DRONE, param_value("SIM_GPS1_ENABLE", 1))   # answer to the PARAM_SET
     executor.on_mavlink(DRONE, param_value("ALT_HOLD_RTL", 10000))
+    # The battery monitor's consumed charge is reset to a full battery.
+    assert reader.sent()[-1] == ("command_long", (DRONE, 1, mavlink.MAV_CMD_BATTERY_RESET, 0,
+                                                  0xFF, 100, 0.0, 0.0, 0.0, 0.0, 0.0))
+    executor.on_mavlink(DRONE, ack(mavlink.MAV_CMD_BATTERY_RESET))
 
     assert sent_param_sets(reader) == [("SIM_BATT_CAP_AH", 10.0), ("SIM_GPS1_ENABLE", 1.0),
                                        ("ALT_HOLD_RTL", 10000.0)]
     result = single_result(executor)
     assert result.status is CommandStatus.ACCEPTED
+    assert "battery reset to 100 %" in result.detail
     assert "link drop cancelled" in result.detail
+
+
+def test_reset_without_battery_reset_still_succeeds_and_says_so(executor, reader):
+    executor.handle_message(command("FAULT_RESET"))
+    executor.on_mavlink(DRONE, param_value("SIM_BATT_CAP_AH", 10))
+    executor.on_mavlink(DRONE, param_value("SIM_GPS1_ENABLE", 0))
+    executor.on_mavlink(DRONE, param_value("SIM_GPS1_ENABLE", 1))
+    executor.on_mavlink(DRONE, param_value("ALT_HOLD_RTL", 10000))
+    executor.on_mavlink(DRONE, ack(mavlink.MAV_CMD_BATTERY_RESET, mavlink.MAV_RESULT_UNSUPPORTED))
+
+    result = single_result(executor)
+    assert result.status is CommandStatus.ACCEPTED
+    assert "battery reset not supported (MAV_RESULT_UNSUPPORTED)" in result.detail
 
 
 # --- Takeoff and disarm ----------------------------------------------------------------
@@ -889,3 +907,170 @@ def test_route_item_requests_each_have_their_own_timeout(executor, clock):
     result = single_result(executor)
     assert result.status is CommandStatus.TIMEOUT
     assert "mission item request or MISSION_ACK (2 of 4 items sent)" in result.detail
+
+
+# --- MISSION_UPLOAD --------------------------------------------------------------------
+
+MISSION_POINTS = [[38.61, 39.28, 100], [38.62, 39.29, 120], [38.63, 39.30, 100]]
+
+
+def mission_command(loop, start_seq=1, waypoints=None):
+    return command("MISSION_UPLOAD", {"waypoints": waypoints or MISSION_POINTS, "loop": loop, "startSeq": start_seq})
+
+
+def uploaded_items(reader):
+    return [args for name, args in reader.sent() if name == "mission_item_int"]
+
+
+def test_looped_mission_ends_with_a_do_jump_to_item_1_for_ever(executor, reader):
+    executor.handle_message(mission_command(loop=True))
+    assert reader.sent() == [("mission_count", (DRONE, 1, 5, MISSION))]
+
+    request_route_items(executor, 5)
+    items = uploaded_items(reader)
+    assert [item[4] for item in items] == [mavlink.MAV_CMD_NAV_WAYPOINT] * 4 + [mavlink.MAV_CMD_DO_JUMP]
+    # Every waypoint, the last one too, is a NAV_WAYPOINT at its altitude above home.
+    assert [(item[11], item[12], item[13]) for item in items[1:4]] == [
+        (386100000, 392800000, 100.0), (386200000, 392900000, 120.0), (386300000, 393000000, 100.0)]
+    assert {item[3] for item in items[1:4]} == {mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT}
+    jump = items[4]
+    assert (jump[7], jump[8]) == (1, -1)                       # jump to item 1, repeat for ever
+    assert (jump[11], jump[12], jump[13]) == (0, 0, 0)
+    assert {item[6] for item in items} == {1}                  # autocontinue
+
+    executor.on_mavlink(DRONE, mission_ack(mission_type=MISSION))
+    assert reader.sent()[-1] == ("mission_set_current", (DRONE, 1, 1))
+    executor.on_mavlink(DRONE, mission_current(1))
+    executor.on_mavlink(DRONE, ack(mavlink.MAV_CMD_DO_SET_MODE))
+
+    result = single_result(executor)
+    assert result.status is CommandStatus.ACCEPTED
+    assert result.detail == "looped mission of 3 waypoint(s) uploaded, item 1 current, mode AUTO set"
+
+
+def test_mission_without_loop_loiters_at_its_last_waypoint(executor, reader):
+    executor.handle_message(mission_command(loop=False))
+    assert reader.sent() == [("mission_count", (DRONE, 1, 4, MISSION))]
+
+    request_route_items(executor, 4)
+    items = uploaded_items(reader)
+    assert [item[4] for item in items] == [mavlink.MAV_CMD_NAV_WAYPOINT] * 3 + [mavlink.MAV_CMD_NAV_LOITER_UNLIM]
+    assert (items[3][11], items[3][12], items[3][13]) == (386300000, 393000000, 100.0)
+    assert not [item for item in items if item[4] == mavlink.MAV_CMD_DO_JUMP]
+
+
+def test_mission_is_flown_from_its_start_seq(executor, reader):
+    executor.handle_message(mission_command(loop=True, start_seq=3))
+    request_route_items(executor, 5)
+    executor.on_mavlink(DRONE, mission_ack(mission_type=MISSION))
+    assert reader.sent()[-1] == ("mission_set_current", (DRONE, 1, 3))
+
+    executor.on_mavlink(DRONE, mission_current(1))             # not yet the asked item: keeps waiting
+    assert reader.sent()[-1][0] == "mission_set_current"
+    executor.on_mavlink(DRONE, mission_current(3))
+    assert reader.sent()[-1] == ("command_long", (DRONE, 1, mavlink.MAV_CMD_DO_SET_MODE, 0,
+                                                  mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED, 10,
+                                                  0.0, 0.0, 0.0, 0.0, 0.0))
+    executor.on_mavlink(DRONE, ack(mavlink.MAV_CMD_DO_SET_MODE))
+
+    result = single_result(executor)
+    assert result.status is CommandStatus.ACCEPTED
+    assert "item 3 current" in result.detail
+
+
+def test_mission_without_mission_current_of_its_start_seq_is_timeout(executor, clock):
+    executor.handle_message(mission_command(loop=False, start_seq=2))
+    request_route_items(executor, 4)
+    executor.on_mavlink(DRONE, mission_ack(mission_type=MISSION))
+    executor.on_mavlink(DRONE, mission_current(1))
+    clock.advance(5)
+    executor.tick()
+
+    result = single_result(executor)
+    assert result.status is CommandStatus.TIMEOUT
+    assert "MISSION_CURRENT with item 2" in result.detail
+
+
+def test_refused_mission_upload_is_rejected_and_mode_unchanged(executor, reader):
+    executor.handle_message(mission_command(loop=True))
+    executor.on_mavlink(DRONE, item_request(0, mission_type=MISSION))
+    executor.on_mavlink(DRONE, mission_ack(mavlink.MAV_MISSION_NO_SPACE, mission_type=MISSION))
+
+    result = single_result(executor)
+    assert result.status is CommandStatus.REJECTED
+    assert "MAV_MISSION_NO_SPACE" in result.detail
+    assert not [name for name, _ in reader.sent() if name in ("mission_set_current", "command_long")]
+
+
+def test_mission_item_requests_each_have_their_own_timeout(executor, clock):
+    executor.handle_message(mission_command(loop=True))
+    for seq in range(3):
+        clock.advance(4)
+        executor.on_mavlink(DRONE, item_request(seq, mission_type=MISSION))
+        executor.tick()
+    assert executor.take_results() == []
+
+    clock.advance(5)
+    executor.tick()
+    result = single_result(executor)
+    assert result.status is CommandStatus.TIMEOUT
+    assert "mission item request or MISSION_ACK (3 of 5 items sent)" in result.detail
+
+
+# --- LAND ------------------------------------------------------------------------------
+
+LAND_PARAMS = {"approach": [38.6017, 39.2850, 60], "land": [38.6125, 39.2850]}
+
+
+def test_land_uploads_do_land_start_approach_and_nav_land_then_auto(executor, reader):
+    reader.messages[(DRONE, "GLOBAL_POSITION_INT")] = mavlink.MAVLink_global_position_int_message(
+        time_boot_ms=0, lat=386200000, lon=392900000, alt=1150000, relative_alt=150000,
+        vx=0, vy=0, vz=0, hdg=0)
+    executor.handle_message(command("LAND", LAND_PARAMS))
+    assert reader.sent() == [("mission_count", (DRONE, 1, 4, MISSION))]
+
+    request_route_items(executor, 4)
+    items = uploaded_items(reader)
+    assert [item[4] for item in items] == [mavlink.MAV_CMD_NAV_WAYPOINT, mavlink.MAV_CMD_DO_LAND_START,
+                                           mavlink.MAV_CMD_NAV_WAYPOINT, mavlink.MAV_CMD_NAV_LAND]
+    assert items[0][3] == mavlink.MAV_FRAME_GLOBAL                          # home placeholder
+    assert (items[1][11], items[1][12]) == (386125000, 392850000)          # DO_LAND_START at the land point
+    assert (items[2][11], items[2][12], items[2][13]) == (386017000, 392850000, 60.0)   # approach
+    assert (items[3][11], items[3][12], items[3][13]) == (386125000, 392850000, 0)      # touchdown at home
+    assert {item[3] for item in items[1:]} == {mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT}
+
+    executor.on_mavlink(DRONE, mission_ack(mission_type=MISSION))
+    assert reader.sent()[-1] == ("mission_set_current", (DRONE, 1, 1))
+    # DO_LAND_START is no navigation command: ArduPilot may report the approach as current.
+    executor.on_mavlink(DRONE, mission_current(2))
+    assert reader.sent()[-1] == ("command_long", (DRONE, 1, mavlink.MAV_CMD_DO_SET_MODE, 0,
+                                                  mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED, 10,
+                                                  0.0, 0.0, 0.0, 0.0, 0.0))
+    executor.on_mavlink(DRONE, ack(mavlink.MAV_CMD_DO_SET_MODE))
+
+    result = single_result(executor)
+    assert result.status is CommandStatus.ACCEPTED
+    assert result.detail.startswith("landing uploaded: approach 38.6017000, 39.2850000 at 60 m")
+
+
+def test_land_also_accepts_mission_current_of_do_land_start(executor):
+    executor.handle_message(command("LAND", LAND_PARAMS))
+    request_route_items(executor, 4)
+    executor.on_mavlink(DRONE, mission_ack(mission_type=MISSION))
+    executor.on_mavlink(DRONE, mission_current(1))
+    executor.on_mavlink(DRONE, ack(mavlink.MAV_CMD_DO_SET_MODE))
+
+    assert single_result(executor).status is CommandStatus.ACCEPTED
+
+
+def test_land_without_mission_current_of_the_landing_is_timeout(executor, clock):
+    executor.handle_message(command("LAND", LAND_PARAMS))
+    request_route_items(executor, 4)
+    executor.on_mavlink(DRONE, mission_ack(mission_type=MISSION))
+    executor.on_mavlink(DRONE, mission_current(3))           # not the start of the landing
+    clock.advance(5)
+    executor.tick()
+
+    result = single_result(executor)
+    assert result.status is CommandStatus.TIMEOUT
+    assert "MISSION_CURRENT with item 1 or 2" in result.detail

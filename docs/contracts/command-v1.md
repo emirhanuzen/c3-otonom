@@ -46,6 +46,8 @@
 | `LOITER` | - | `COMMAND_LONG` `MAV_CMD_DO_SET_MODE`, mod LOITER | `COMMAND_ACK` ACCEPTED |
 | `GOTO` | `lat` (-90..90), `lon` (-180..180), `alt` (m, eve göre, >= 0) | `COMMAND_INT` `MAV_CMD_DO_REPOSITION`, frame `MAV_FRAME_GLOBAL_RELATIVE_ALT`, GUIDED'a geçiş bayrağıyla | `COMMAND_ACK` ACCEPTED |
 | `ROUTE` | `waypoints` (`[[lat, lon, alt], ...]`, 1..100 nokta; `alt` m, eve göre, >= 0; sonuncusu hedef) | Görev (mission) yüklemesi, ardından `MISSION_SET_CURRENT` seq = 1, ardından `COMMAND_LONG` `MAV_CMD_DO_SET_MODE`, mod AUTO (aşağıya bakın) | `MISSION_ACK` `MAV_MISSION_ACCEPTED`, `MISSION_CURRENT` seq = 1, mod `COMMAND_ACK` ACCEPTED |
+| `MISSION_UPLOAD` | `waypoints` (`ROUTE` gibi, 1..100 nokta), `loop` (bool, verilmezse `false`), `startSeq` (tam sayı, 1..nokta sayısı, verilmezse 1) | Görev yüklemesi (`ROUTE` gibi; öğeler aşağıda), ardından `MISSION_SET_CURRENT` seq = `startSeq`, ardından `COMMAND_LONG` `MAV_CMD_DO_SET_MODE`, mod AUTO | `MISSION_ACK` `MAV_MISSION_ACCEPTED`, `MISSION_CURRENT` seq = `startSeq`, mod `COMMAND_ACK` ACCEPTED |
+| `LAND` | `approach` (`[lat, lon, alt]`, alt m eve göre, >= 0), `land` (`[lat, lon]`, home) | Görev yüklemesi `[home yer tutucu, DO_LAND_START, NAV_WAYPOINT yaklaşma, NAV_LAND]`, ardından `MISSION_SET_CURRENT` seq = 1, ardından mod AUTO (aşağıya bakın) | `MISSION_ACK` `MAV_MISSION_ACCEPTED`, `MISSION_CURRENT` seq = 1 veya 2, mod `COMMAND_ACK` ACCEPTED |
 | `TAKEOFF` | `alt` (m, eve göre, 30..300; verilmezse 60) | Sırayla: `PARAM_SET` `TKOFF_ALT` = `alt`; `COMMAND_LONG` `MAV_CMD_DO_SET_MODE`, mod TAKEOFF; `COMMAND_LONG` `MAV_CMD_COMPONENT_ARM_DISARM`, param1 = 1 | `PARAM_VALUE` aynı değer, mod `COMMAND_ACK` ACCEPTED, arm `COMMAND_ACK` ACCEPTED |
 | `DISARM` | - | `COMMAND_LONG` `MAV_CMD_COMPONENT_ARM_DISARM`, param1 = 0, param2 = 0 (force yok; otopilot havadayken reddeder) | `COMMAND_ACK` ACCEPTED |
 | `FENCE_UPLOAD` | `version` (boş olmayan metin, en fazla 64 karakter), `action` (`RTL` veya `REPORT`), `polygons` (`[[[lat, lon], ...], ...]`; poligon başına en az 3 köşe, toplam en fazla 500 köşe) | Sırayla: fence listesi (aşağıya bakın); `polygons` boşsa yalnızca `PARAM_SET` `FENCE_ENABLE` = 0, değilse `PARAM_SET` `FENCE_ACTION` (RTL = 1, REPORT = 0); `PARAM_REQUEST_READ` `FENCE_TYPE`, poligon biti (4) yoksa `PARAM_SET` `FENCE_TYPE` = eski değer \| 4; `PARAM_SET` `FENCE_ENABLE` = 1 | `MISSION_ACK` `MAV_MISSION_ACCEPTED` ve bütün parametrelerde `PARAM_VALUE` aynı değer |
@@ -53,7 +55,7 @@
 | `FAULT_GPS_LOSS` | `enabled` (bool; `true` = GPS kaybı) | `PARAM_SET` `SIM_GPS1_ENABLE` (0/1) veya, o yoksa, `SIM_GPS_DISABLE` (1/0) | `PARAM_VALUE` aynı değer |
 | `FAULT_LOW_ALTITUDE` | - | `PARAM_SET` `ALT_HOLD_RTL` = 2000 (cm), ardından RTL | İkisi de başarılı |
 | `FAULT_LINK_DROP` | `seconds` (1..60) | Hiçbir şey | Adaptör o İHA'nın telemetrisini bu süre boyunca yayınlamaz; hemen ACCEPTED |
-| `FAULT_RESET` | - | `SIM_BATT_CAP_AH` = 10, GPS açık, `ALT_HOLD_RTL` = 10000; süren link drop iptal edilir | Bütün parametreler doğrulanır |
+| `FAULT_RESET` | - | `SIM_BATT_CAP_AH` = 10, GPS açık, `ALT_HOLD_RTL` = 10000, ardından `COMMAND_LONG` `MAV_CMD_BATTERY_RESET` (param1 = 0xFF bütün bataryalar, param2 = 100 %); süren link drop iptal edilir | Bütün parametreler doğrulanır. Batarya sıfırlaması reddedilirse komut yine ACCEPTED olur, `detail` `battery reset not supported (<sonuç>)` içerir (test sayfası "SITL yeniden başlatılınca batarya dolar" notunu gösterir) |
 
 - `FAULT_*` tipleri yalnızca SITL'de anlamlıdır, çünkü simülatörün `SIM_*` parametrelerini değiştirir.
 - Mod numaraları ArduPlane'e göredir (AUTO = 10, LOITER = 12, TAKEOFF = 13).
@@ -62,6 +64,8 @@
 - `TAKEOFF` ve `DISARM` bu sürümde geriye uyumlu olarak eklendi; `schemaVersion` 1 kalır. Bu tipleri tanımayan eski bir adaptör onları `REJECTED` ("unknown command type") ile cevaplar.
 - `FENCE_UPLOAD` da geriye uyumlu olarak eklendi; `schemaVersion` 1 kalır. Eski bir adaptör onu `REJECTED` ("unknown command type") ile cevaplar.
 - `ROUTE` da geriye uyumlu olarak eklendi; `schemaVersion` 1 kalır. Eski bir adaptör onu `REJECTED` ("unknown command type") ile cevaplar.
+- `MISSION_UPLOAD` da geriye uyumlu olarak eklendi; `schemaVersion` 1 kalır. Eski bir adaptör onu `REJECTED` ("unknown command type") ile cevaplar.
+- `LAND` da geriye uyumlu olarak eklendi; `schemaVersion` 1 kalır. Eski bir adaptör onu `REJECTED` ("unknown command type") ile cevaplar.
 - GPS parametresinin adı İHA'ya `PARAM_REQUEST_READ` ile sorulur (ArduPilot 4.6'da `SIM_GPS_DISABLE` yerini `SIM_GPS1_ENABLE`'a bıraktı) ve adaptör çalıştığı sürece İHA başına önbellekte tutulur.
 
 ## Yasak bölgeleri dolaşan rota (`ROUTE`)
@@ -88,6 +92,51 @@
 - Her öğe isteği, `MISSION_ACK`, `MISSION_CURRENT` ve mod `COMMAND_ACK` ayrı ayrı 5 saniye içinde gelmelidir; gelmezse `TIMEOUT`.
 - **`ROUTE`, İHA'daki önceki görevin yerine geçer.** O görev silinir; sonradan `RESUME_MISSION` bu rotayı (hedefte bekleme dahil) uçar, eski görevi değil.
 - Fence öğeleri (`mission_type` = 1) ayrı bir listedir; `ROUTE` onlara dokunmaz.
+
+## Planlanmış görev (`MISSION_UPLOAD`)
+
+Çekirdek, haritada planlanan bir görevi İHA'ya atarken (`POST /api/missions/{id}/assign`) ve aşağıdaki durumda `RESUME_MISSION` yerine gönderir. "İHA yerde" kontrolü `ROUTE` gibi uygulanır.
+
+```json
+{
+  "schemaVersion": 1,
+  "commandId": "7b3c9d2e-1f4a-4c5b-9d6e-8f7a6b5c4d3e",
+  "droneId": 3,
+  "type": "MISSION_UPLOAD",
+  "params": {"waypoints": [[38.6125, 39.2915, 100], [38.6110, 39.2974, 100], [38.6140, 39.2974, 120]], "loop": true, "startSeq": 1},
+  "issuedAt": "2026-11-09T12:00:00.000Z"
+}
+```
+
+- Yükleme, öğe istekleri, `MISSION_ACK` ve zaman aşımları `ROUTE` ile aynıdır. `waypoints` n nokta ise:
+  - seq 0: home yer tutucu (`ROUTE` gibi).
+  - `loop` = `false`: seq 1..n-1 `MAV_CMD_NAV_WAYPOINT`, seq n `MAV_CMD_NAV_LOITER_UNLIM` (son noktada daire çizer); görev n + 1 öğedir.
+  - `loop` = `true`: seq 1..n `MAV_CMD_NAV_WAYPOINT`, seq n + 1 `MAV_CMD_DO_JUMP`, frame `MAV_FRAME_MISSION`, param1 = 1 (hedef öğe), param2 = -1 (sonsuz tekrar), x/y/z = 0; görev n + 2 öğedir.
+  - Bütün öğelerde current = 0, autocontinue = 1; nokta öğelerinde param1-4 = 0.
+- `MISSION_ACK` kabulse `MISSION_SET_CURRENT` seq = `startSeq` gönderilir ve seq = `startSeq` bildiren `MISSION_CURRENT` beklenir, ardından mod AUTO istenir. Detail: `looped mission of 3 waypoint(s) uploaded, item 1 current, mode AUTO set`.
+- `startSeq` görev öğesi numarasıdır: 1 ilk nokta, k k'inci nokta.
+- **`RESUME_MISSION` (çekirdek davranışı):** İHA'ya atanmış bir görev varsa ve İHA'daki görev o değilse (o İHA'nın en yeni `MISSION_UPLOAD`/`ROUTE`/`GOTO` komutu bir `ROUTE` ya da `GOTO`, veya `PENDING`/`ACCEPTED` olmayan bir `MISSION_UPLOAD` ise), çekirdek `RESUME_MISSION` yerine atanmış görevi `MISSION_UPLOAD` olarak gönderir; `startSeq`, İHA'nın o görevde en son bildirdiği `missionSeq`'tir (bilinmiyorsa 1). Atanmış görev yoksa ya da İHA'da zaten o varsa `RESUME_MISSION` olduğu gibi gider.
+
+## Home'a iniş (`LAND`)
+
+Parametreleri çekirdek hesaplar (`LandingService`); istemcinin gönderdiği parametreler kullanılmaz. "İHA yerde" kontrolü `ROUTE` gibi uygulanır.
+
+```json
+{
+  "schemaVersion": 1,
+  "commandId": "8c4d1e2f-3a5b-4c6d-9e7f-1a2b3c4d5e6f",
+  "droneId": 3,
+  "type": "LAND",
+  "params": {"approach": [38.6017081, 39.2850000, 60], "land": [38.6125000, 39.2850000]},
+  "issuedAt": "2026-11-09T12:00:00.000Z"
+}
+```
+
+- **Home**: telemetrinin `home` alanı (otopilotun `HOME_POSITION`'ı; 0, 0 home sayılmaz), o yoksa çekirdeğin İHA'yı o adaptör oturumunda yerde (disarmed ya da göreli irtifa < 10 m) gördüğü ilk konum. İkisi de yoksa 409 "İHA'nın home noktası bilinmiyor".
+- **Yaklaşma noktası**: home'dan iniş yönünün (`otonom.landing.heading-deg`, varsayılan 0 = kuzeye doğru iniş, rüzgâr yok varsayımı) tersine `otonom.landing.approach-distance-m` (1200 m) geride, `otonom.landing.approach-alt-m` (60 m) irtifada.
+- İHA'nın konumundan yaklaşma noktasına (yaklaşma bacağı) ve yaklaşma noktasından home'a (iniş bacağı) giden doğru parçaları, rota planlamasındaki gibi 150 m payla genişletilmiş etkin yasak bölgelere göre denetlenir; değen bacak 409 (`Landing blocked`, `reason` `APPROACH_BLOCKED` / `LANDING_BLOCKED`, `zones`) ile reddedilir.
+- Adaptör görevi `ROUTE` gibi yükler (zaman aşımları aynı): seq 0 home yer tutucu; seq 1 `MAV_CMD_DO_LAND_START` (x/y = home); seq 2 `MAV_CMD_NAV_WAYPOINT` yaklaşma, frame `MAV_FRAME_GLOBAL_RELATIVE_ALT`; seq 3 `MAV_CMD_NAV_LAND` home'da, alt 0. Ardından `MISSION_SET_CURRENT` seq = 1. `DO_LAND_START` bir navigasyon komutu olmadığından ArduPilot hemen yaklaşma noktasını (seq 2) current bildirebilir; `MISSION_CURRENT` 1 veya 2 kabul edilir. Sonra mod AUTO.
+- `LAND`, `ROUTE` gibi İHA'daki görevin yerine geçer. Teker koyduktan sonra otopilot kendisi disarm eder (`LAND_DISARMDELAY`); harita, ACCEPTED bir `LAND`'den sonra `armed=false` görünce "İndi" bildirimi gösterir.
 
 ## Otopilot bölgeleri (`FENCE_UPLOAD`)
 
@@ -124,6 +173,8 @@ Telemetri anlık görüntüsünün `status` nesnesine, şema sürümü değişme
 |---|---|---|
 | `status.fenceBreached` | bool veya `null` | MAVLink `FENCE_STATUS.breach_status` (1 = otopilot şu an bir fence'i ihlal ediyor) |
 | `status.fenceBreachCount` | int veya `null` | `FENCE_STATUS.breach_count` (otopilot açıldığından beri ihlal sayısı) |
+| `home.lat`, `home.lon`, `home.altMsl` | sayı veya `null` | MAVLink `HOME_POSITION` (`latitude`/`longitude` * 10^-7, `altitude` mm -> m, MSL); adaptör ilk heartbeat'te `MAV_CMD_SET_MESSAGE_INTERVAL` ile 5 saniyede bir ister. `home` nesnesi geriye uyumlu olarak eklendi; `LAND`'in hedefidir |
+| `status.missionSeq` | int veya `null` | `MISSION_CURRENT.seq`: otopilotun şu an uçtuğu görev öğesi (0 = home, 1 = ilk nokta); hiç gelmediyse `null`. Aynı şekilde geriye uyumlu olarak eklendi. Çekirdek, İHA atanmış görevini AUTO'da uçarken bunu değiştikçe `drone_mission.last_seq`'e yazar |
 
 - ArduPilot `FENCE_STATUS`'u yalnızca fence etkinken gönderir; hiç gelmediyse iki alan da `null`'dır. Adaptör ilk heartbeat'te veri akışının yanında `MAV_CMD_SET_MESSAGE_INTERVAL` ile `FENCE_STATUS`'u (162) saniyede bir ister.
 - Çekirdek `fenceBreached = true` için `FENCE_BREACH` (CRITICAL) alarmı açar: "Otopilot yasak bölge koruması devreye girdi".

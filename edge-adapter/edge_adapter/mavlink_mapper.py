@@ -8,7 +8,7 @@ Fields whose message has not arrived yet stay None.
 
 from pymavlink import mavutil
 
-from edge_adapter.telemetry import Battery, DroneTelemetry, Gps, Position, Status, Velocity
+from edge_adapter.telemetry import Battery, DroneTelemetry, Gps, Home, Position, Status, Velocity
 
 # MAVLink uses these values to say "unknown" in some fields.
 UINT8_UNKNOWN = 255
@@ -23,8 +23,17 @@ def to_telemetry(drone_id, state):
         velocity=_velocity(state.messages.get("VFR_HUD")),
         battery=_battery(state.messages.get("SYS_STATUS")),
         gps=_gps(state.messages.get("GPS_RAW_INT")),
-        status=_status(state.messages.get("HEARTBEAT"), state.messages.get("FENCE_STATUS")),
+        status=_status(state.messages.get("HEARTBEAT"), state.messages.get("FENCE_STATUS"),
+                       state.messages.get("MISSION_CURRENT")),
+        home=_home(state.messages.get("HOME_POSITION")),
     )
+
+
+def _home(msg):
+    if msg is None:
+        return Home()
+    # latitude/longitude are degrees * 10^7, altitude millimetres above mean sea level.
+    return Home(lat=msg.latitude / 1e7, lon=msg.longitude / 1e7, alt_msl=msg.altitude / 1000)
 
 
 def _position(msg):
@@ -75,16 +84,19 @@ def _gps(msg):
     )
 
 
-def _status(heartbeat, fence):
+def _status(heartbeat, fence, mission_current=None):
     # FENCE_STATUS only arrives while the autopilot's fence is enabled; without it both stay None.
     fence_breached = bool(fence.breach_status) if fence is not None else None
     fence_breach_count = fence.breach_count if fence is not None else None
+    # MISSION_CURRENT.seq: the mission item the autopilot flies to now (0 = home, 1 = first waypoint).
+    mission_seq = mission_current.seq if mission_current is not None else None
     if heartbeat is None:
-        return Status(fence_breached=fence_breached, fence_breach_count=fence_breach_count)
+        return Status(fence_breached=fence_breached, fence_breach_count=fence_breach_count, mission_seq=mission_seq)
     return Status(
         # The mode name comes from custom_mode, interpreted per vehicle type.
         mode=mavutil.mode_string_v10(heartbeat),
         armed=bool(heartbeat.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED),
         fence_breached=fence_breached,
         fence_breach_count=fence_breach_count,
+        mission_seq=mission_seq,
     )

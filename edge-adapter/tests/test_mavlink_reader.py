@@ -58,9 +58,12 @@ def test_mission_current_goes_to_listeners():
     received = []
     reader.add_listener(lambda sysid, msg: received.append(msg.get_type()))
 
-    reader._handle(link, from_aircraft(mavlink.MAVLink_mission_current_message(seq=1)), now=1.0)
+    msg = from_aircraft(mavlink.MAVLink_mission_current_message(seq=1))
+    reader._handle(link, msg, now=1.0)
 
     assert received == ["MISSION_CURRENT"]
+    # Also stored, for the telemetry's status.missionSeq.
+    assert reader.latest(3, "MISSION_CURRENT") is msg
 
 
 def test_latest_gives_the_stored_message():
@@ -111,11 +114,14 @@ def test_first_heartbeat_requests_the_stream_and_fence_status():
     reader._handle(link, heartbeat, now=1.0)
 
     names = [name for name, _ in link.conn.mav.sent]
-    assert names == ["request_data_stream", "command_long"]
+    assert names == ["request_data_stream", "command_long", "command_long"]
     interval = link.conn.mav.sent[1][1]
     assert interval[2] == mavlink.MAV_CMD_SET_MESSAGE_INTERVAL
     assert interval[4] == mavlink.MAVLINK_MSG_ID_FENCE_STATUS
     assert interval[5] == 1_000_000
+    home = link.conn.mav.sent[2][1]
+    assert (home[2], home[4], home[5]) == (mavlink.MAV_CMD_SET_MESSAGE_INTERVAL,
+                                           mavlink.MAVLINK_MSG_ID_HOME_POSITION, 5_000_000)
 
 
 def test_replies_from_other_components_are_ignored():

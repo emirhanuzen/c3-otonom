@@ -26,7 +26,8 @@ public record DroneStateResponseDto(
 		TelemetryMessageDto.Velocity velocity,
 		TelemetryMessageDto.Battery battery,
 		TelemetryMessageDto.Gps gps,
-		TelemetryMessageDto.Status status) {
+		TelemetryMessageDto.Status status,
+		TelemetryMessageDto.Home home) {
 
 	public static DroneStateResponseDto from(DroneLiveState state) {
 		TelemetryMessageDto message = state.message();
@@ -42,7 +43,8 @@ public record DroneStateResponseDto(
 				message.velocity(),
 				message.battery(),
 				message.gps(),
-				message.status());
+				message.status(),
+				message.home());
 	}
 
 }

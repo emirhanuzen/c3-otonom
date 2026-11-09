@@ -29,6 +29,7 @@ import com.otonomc3.core.command.service.SimDisabledException;
 import com.otonomc3.core.command.service.TakeoffInNoFlyZoneException;
 import com.otonomc3.core.drone.service.DroneNotFoundException;
 import com.otonomc3.core.drone.service.LinkStatus;
+import com.otonomc3.core.landing.service.LandingBlockedException;
 import com.otonomc3.core.route.service.RouteBlockedException;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -136,6 +137,20 @@ class CommandControllerTest {
 				.andExpect(jsonPath("$.detail").value("Kalkış noktası yasak bölgede: Havalimanı, Askeri alan"))
 				.andExpect(jsonPath("$.zones[0]").value("Havalimanı"))
 				.andExpect(jsonPath("$.zones[1]").value("Askeri alan"));
+	}
+
+	@Test
+	void landingThroughAZoneIs409WithItsReason() throws Exception {
+		when(service.issue(eq(1), eq(CommandType.LAND), any())).thenThrow(new LandingBlockedException(
+				LandingBlockedException.Reason.LANDING_BLOCKED, List.of("Orduevi")));
+
+		mvc.perform(post("/api/drones/1/commands").contentType(MediaType.APPLICATION_JSON)
+						.content("{\"type\":\"LAND\"}"))
+				.andExpect(status().isConflict())
+				.andExpect(jsonPath("$.title").value("Landing blocked"))
+				.andExpect(jsonPath("$.detail").value("İniş bacağı yasak bölgeden geçiyor: Orduevi"))
+				.andExpect(jsonPath("$.reason").value("LANDING_BLOCKED"))
+				.andExpect(jsonPath("$.zones[0]").value("Orduevi"));
 	}
 
 	@Test

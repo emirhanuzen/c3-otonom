@@ -23,6 +23,10 @@
  * GET /api/drones/{id}/fence and /topic/fence: their state is a line of the drone's
  * popup, and the "Otopilot sınırlarını göster" switch draws the selected drone's
  * simplified polygons.
+ *
+ * Missions are listed, edited, checked and assigned by missions.js in the panel's
+ * "Görevler" section; this file forwards /topic/missions to it, draws nothing of them
+ * itself and adds the assigned mission's line to the drone's popup.
  */
 (() => {
 	const CENTER = [38.6069, 39.2914]; // Elazığ Airport
@@ -103,9 +107,12 @@
 	 */
 	const trailLayer = L.layerGroup().addTo(map);
 
+	/** Set right after the panel is added (missions.js renders into one of its sections). */
+	let missions = null;
+
 	const geofences = window.OtonomGeofences.attach(map, {
-		// A click on a zone picks the GOTO target instead of opening the zone's panel.
-		isMapBusy: () => pickingTarget,
+		// A click on a zone picks the GOTO target, or adds a mission waypoint, instead of opening the zone's panel.
+		isMapBusy: () => pickingTarget || Boolean(missions?.isEditing()),
 		onDrawStart: () => cancelPendingCommand(),
 	});
 	let trailDurationMs = DEFAULT_TRAIL_DURATION_MS;
@@ -144,7 +151,7 @@
 	 * or below MIN_AIRBORNE_ALT_REL_M (CommandType.requiresAirborne and
 	 * CommandValidator.MIN_AIRBORNE_ALT_REL). RTL and the FAULT_* commands are exempt.
 	 */
-	const AIRBORNE_COMMANDS = new Set(['GOTO', 'ROUTE', 'LOITER', 'RESUME_MISSION']);
+	const AIRBORNE_COMMANDS = new Set(['GOTO', 'ROUTE', 'MISSION_UPLOAD', 'LAND', 'LOITER', 'RESUME_MISSION']);
 	const MIN_AIRBORNE_ALT_REL_M = 10;
 	const ON_GROUND_REASON = 'İHA yerde, önce kalkış yapılmalı';
 	/** TAKEOFF limits and default, as in CommandValidator. */
@@ -160,7 +167,7 @@
 	/** The core refuses DISARM at or above these (CommandValidator.DISARM_MAX_ALT_REL / _GROUND_SPEED). */
 	const DISARM_MAX_ALT_REL_M = 5;
 	const DISARM_MAX_GROUND_SPEED_MS = 3;
-	const DISARM_IN_FLIGHT_REASON = 'İHA havadayken motor kapatılamaz';
+	const DISARM_IN_FLIGHT_REASON = "Havadayken motor kapatılamaz - İniş yap'ı kullanın";
 	const DISARMED_REASON = 'Motorlar zaten kapalı';
 	const ARMED_UNKNOWN_REASON = 'Motorların durumu bilinmiyor';
 
@@ -185,6 +192,43 @@
 
 	// --- Panel -------------------------------------------------------------------
 
+	/** Section name -> open, as the operator left it; kept in localStorage. */
+	const PANEL_SECTIONS_KEY = 'otonom.panel.sections';
+	const PANEL_MINIMIZED_KEY = 'otonom.panel.minimized';
+	let sectionsOpen = readStoredJson(PANEL_SECTIONS_KEY) ?? {};
+
+	function sectionHeader(title) {
+		return `<button type="button" class="section-header" aria-expanded="true">
+				<span class="section-title">${title}</span><span class="section-chevron" aria-hidden="true"></span>
+			</button>`;
+	}
+
+	/** Storage may be unavailable (private mode, blocked site data); the panel works without it. */
+	function readStored(key) {
+		try {
+			return localStorage.getItem(key);
+		} catch {
+			return null;
+		}
+	}
+
+	function readStoredJson(key) {
+		try {
+			const value = JSON.parse(readStored(key) ?? 'null');
+			return value && typeof value === 'object' ? value : null;
+		} catch {
+			return null;
+		}
+	}
+
+	function writeStored(key, value) {
+		try {
+			localStorage.setItem(key, value);
+		} catch {
+			// See readStored.
+		}
+	}
+
 	const panel = L.control({ position: 'topright' });
 	let connectionEl;
 	let listEl;
@@ -195,17 +239,26 @@
 			.map((d) => `<option value="${d.ms}"${d.ms === DEFAULT_TRAIL_DURATION_MS ? ' selected' : ''}>${d.label}</option>`)
 			.join('');
 		container.innerHTML = `
-			<div class="connection"><span class="dot"></span><span class="text"></span></div>
-			<h2>İHA'lar</h2>
-			<ul class="drone-list"><li class="empty">Henüz İHA yok</li></ul>
-			<div class="command-controls">
-				<h2>Komutlar</h2>
+			<div class="panel-top">
+				<div class="connection"><span class="dot"></span><span class="text"></span></div>
+				<button type="button" class="panel-minimize" aria-expanded="true"></button>
+			</div>
+			<section class="panel-section" data-section="drones">
+				${sectionHeader("İHA'lar")}
+				<div class="section-body">
+					<ul class="drone-list"><li class="empty">Henüz İHA yok</li></ul>
+				</div>
+			</section>
+			<section class="panel-section command-controls" data-section="commands">
+				${sectionHeader('Komutlar')}
+				<div class="section-body">
 				<div class="command-target"></div>
 				<div class="command-buttons">
 					<button type="button" data-command="RTL">Eve dön</button>
 					<button type="button" data-command="RESUME_MISSION">Göreve devam</button>
 					<button type="button" data-command="LOITER">Bekle</button>
 					<button type="button" data-command="GOTO">Noktaya git</button>
+					<button type="button" class="land-button" data-command="LAND">İniş yap</button>
 				</div>
 				<div class="command-ground">
 					<label class="takeoff-alt" title="Kalkış irtifası, eve göre (${TAKEOFF_MIN_ALT_M}-${TAKEOFF_MAX_ALT_M} m)">
@@ -225,9 +278,15 @@
 						<button type="button" class="confirm-no">Vazgeç</button>
 					</div>
 				</div>
-			</div>
-			<div class="trail-controls">
-				<h2>İzler</h2>
+				</div>
+			</section>
+			<section class="panel-section mission-controls" data-section="missions">
+				${sectionHeader('Görevler')}
+				<div class="section-body mission-body"></div>
+			</section>
+			<section class="panel-section trail-controls" data-section="trails">
+				${sectionHeader('İzler')}
+				<div class="section-body">
 				<label class="control-row">
 					<span>İz süresi</span>
 					<select class="trail-duration">${durationOptions}</select>
@@ -238,17 +297,25 @@
 					<span class="switch-track" aria-hidden="true"></span>
 				</label>
 				<button type="button" class="trail-clear">İzleri temizle</button>
-			</div>
-			<div class="fence-controls">
-				<h2>Otopilot</h2>
+				</div>
+			</section>
+			<section class="panel-section fence-controls" data-section="fence">
+				${sectionHeader('Otopilot')}
+				<div class="section-body">
 				<label class="control-row switch" title="Seçili İHA'nın otopilotuna yüklenen sadeleştirilmiş yasak bölgeler">
 					<span>Otopilot sınırlarını göster</span>
 					<input type="checkbox" class="fence-visible" role="switch">
 					<span class="switch-track" aria-hidden="true"></span>
 				</label>
-			</div>`;
+				</div>
+			</section>`;
 		L.DomEvent.disableClickPropagation(container);
 		L.DomEvent.disableScrollPropagation(container);
+		// disableClickPropagation lets a click reach the map and only marks the panel; the map then
+		// looks for that mark on the clicked element's ancestors. A list re-rendered by the click
+		// (the mission list) has detached the element by then, and the click would become a map
+		// click (a stray mission waypoint). So clicks stop at the panel.
+		L.DomEvent.on(container, 'click', L.DomEvent.stopPropagation);
 		connectionEl = container.querySelector('.connection');
 		listEl = container.querySelector('.drone-list');
 
@@ -269,9 +336,101 @@
 			renderFenceLayer();
 		});
 		setupCommandControls(container);
+		setupPanelSections(container);
 		return container;
 	};
 	panel.addTo(map);
+
+	// Attached before the GOTO click handler below is registered, so a click that picks a GOTO
+	// target (pickingTarget still true) never also adds a mission waypoint.
+	missions = window.OtonomMissions.attach(map, panel.getContainer().querySelector('.mission-body'), {
+		isMapBusy: () => pickingTarget || geofences.isDrawing(),
+		onEditStart: () => {
+			cancelPendingCommand();
+			geofences.cancelDrawing();
+			enterMissionEditLayout();
+		},
+		onEditEnd: () => leaveMissionEditLayout(),
+		drones: () => [...drones.values()].map((entry) => ({
+			droneId: entry.state.droneId,
+			label: label(entry.state.droneId),
+			online: entry.state.linkStatus === 'ONLINE',
+			onGround: isOnGround(entry.state),
+		})),
+		droneColor: (droneId) => droneColor(droneId),
+		droneLabel: (droneId) => label(droneId),
+		dronePosition: (droneId) => positionOf(drones.get(droneId)?.state ?? {}),
+		onCommand: (command) => handleCommandEvent(command),
+		selectedDroneId: () => selectedDroneId,
+		onLaunch: (launch) => showLaunchToast(launch),
+		obscuredRightPx: () => {
+			const box = panel.getContainer().getBoundingClientRect();
+			return Math.max(0, map.getContainer().getBoundingClientRect().right - box.left);
+		},
+	});
+
+	// --- Panel sections (accordion) and minimizing ------------------------------------------
+
+	/** Closed while a mission is edited, so only the mission editor stays open; reopened as they were afterwards. */
+	const SECTIONS_CLOSED_WHILE_EDITING = ['commands', 'trails', 'fence'];
+	let missionEditLayout = false;
+
+	function setupPanelSections(container) {
+		container.querySelectorAll('.panel-section').forEach((section) => {
+			const name = section.dataset.section;
+			section.querySelector('.section-header').addEventListener('click', () => {
+				const open = section.classList.contains('collapsed');
+				showSection(name, open, container);
+				sectionsOpen = { ...sectionsOpen, [name]: open };
+				writeStored(PANEL_SECTIONS_KEY, JSON.stringify(sectionsOpen));
+			});
+			showSection(name, sectionsOpen[name] ?? true, container);
+		});
+		const minimizeEl = container.querySelector('.panel-minimize');
+		minimizeEl.addEventListener('click', () => {
+			const minimized = !container.classList.contains('minimized');
+			setPanelMinimized(container, minimized);
+			writeStored(PANEL_MINIMIZED_KEY, minimized ? '1' : '0');
+		});
+		setPanelMinimized(container, readStored(PANEL_MINIMIZED_KEY) === '1');
+	}
+
+	/** Minimized, the panel is a narrow strip at the right edge with only the button to open it again. */
+	function setPanelMinimized(container, minimized) {
+		const minimizeEl = container.querySelector('.panel-minimize');
+		container.classList.toggle('minimized', minimized);
+		minimizeEl.textContent = minimized ? '‹' : '›';
+		minimizeEl.title = minimized ? 'Paneli aç' : 'Paneli küçült';
+		minimizeEl.setAttribute('aria-expanded', String(!minimized));
+	}
+
+	/** Opens or closes one section without remembering it. */
+	function showSection(name, open, container = panel.getContainer()) {
+		const section = container.querySelector(`.panel-section[data-section="${name}"]`);
+		section.classList.toggle('collapsed', !open);
+		section.querySelector('.section-header').setAttribute('aria-expanded', String(open));
+	}
+
+	/** While a mission is edited: only the mission editor (and the drone list) stays open. */
+	function enterMissionEditLayout() {
+		if (missionEditLayout) {
+			return;
+		}
+		missionEditLayout = true;
+		SECTIONS_CLOSED_WHILE_EDITING.forEach((name) => showSection(name, false));
+		showSection('missions', true);
+		setPanelMinimized(panel.getContainer(), false);
+	}
+
+	/** Back to the sections (and the minimized state) as the operator left them. */
+	function leaveMissionEditLayout() {
+		if (!missionEditLayout) {
+			return;
+		}
+		missionEditLayout = false;
+		[...SECTIONS_CLOSED_WHILE_EDITING, 'missions'].forEach((name) => showSection(name, sectionsOpen[name] ?? true));
+		setPanelMinimized(panel.getContainer(), readStored(PANEL_MINIMIZED_KEY) === '1');
+	}
 
 	const CONNECTION_TEXTS = {
 		connecting: 'Sunucuya bağlanıyor…',
@@ -324,6 +483,7 @@
 
 	function update(state) {
 		let entry = drones.get(state.droneId);
+		const linkChanged = entry?.state.linkStatus !== state.linkStatus;
 		if (!entry) {
 			entry = { segments: [], marker: null };
 			entry.listItem = createListItem(state.droneId);
@@ -331,6 +491,9 @@
 			loadFenceStatus(state.droneId);
 		}
 		entry.state = state;
+		if (linkChanged) {
+			missions.refreshDrones();
+		}
 
 		const latLng = positionOf(state);
 		if (latLng) {
@@ -348,6 +511,11 @@
 		updateListItem(entry);
 		if (state.droneId === selectedDroneId) {
 			updateCommandControls();
+		}
+		if (landingDrones.has(state.droneId) && state.status?.armed === false) {
+			landingDrones.delete(state.droneId);
+			showToast('accepted', `${label(state.droneId)} · ${Commands.TYPE_LABELS.LAND}`, 'İndi',
+				'Otopilot inişten sonra motorları kapattı', TOAST_ACCEPTED_MS * 2);
 		}
 		const target = gotoTargets.get(state.droneId);
 		if (target && latLng && map.distance(latLng, target.marker.getLatLng()) < ARRIVAL_RADIUS_M) {
@@ -404,6 +572,10 @@
 			['Uydu sayısı', state.gps?.satellites],
 			['Otopilot bölgeleri', fenceText(fenceStatuses.get(state.droneId))],
 		];
+		const mission = missions.popupRow(state);
+		if (mission) {
+			rows.push(mission);
+		}
 		const body = rows
 			.map(([name, value]) => `<tr><th>${name}</th><td>${escapeHtml(value ?? '—')}</td></tr>`)
 			.join('');
@@ -497,6 +669,8 @@
 		cancelPendingCommand();
 		const previous = drones.get(selectedDroneId);
 		selectedDroneId = droneId;
+		// "Seçili İHA'nın yanına taşı" of the mission editor depends on the selection.
+		missions.refreshDrones();
 		[previous, drones.get(droneId)].forEach((entry) => {
 			if (entry) {
 				updateListItem(entry);
@@ -637,6 +811,10 @@
 				`${label(droneId)} ${alt} m'ye havalanacak. Onaylıyor musun?`, 'Havalan');
 		} else if (type === 'RTL') {
 			askConfirm({ type, droneId, params: {} }, `${label(droneId)} eve dönsün mü?`);
+		} else if (type === 'LAND') {
+			// The core plans the approach and checks it against the zones; a blocked one comes back as 409.
+			askConfirm({ type, droneId, params: {} }, `${label(droneId)} home noktasına iniş yapsın mı? Önce `
+				+ "iniş yönünün tersinden 1,2 km geride 60 m'deki yaklaşma noktasına gider, sonra iner.", 'İniş yap');
 		} else {
 			sendCommand(droneId, type, {});
 		}
@@ -846,6 +1024,7 @@
 		if (commandStatuses.size > COMMAND_STATUS_MEMORY) {
 			commandStatuses.delete(commandStatuses.keys().next().value);
 		}
+		trackLanding(command);
 		// The core sends FENCE_UPLOAD by itself, often; its state is in the drone's popup instead.
 		if (command.type !== 'FENCE_UPLOAD') {
 			showCommandToast(command);
@@ -878,6 +1057,56 @@
 			toast.element.remove();
 			commandToasts.delete(command.id);
 		}, duration);
+	}
+
+	/** droneId -> { element, timer } of the drone's mission launch toast; each step updates it. */
+	const launchToasts = new Map();
+	const TOAST_LAUNCH_ACTIVE_MS = 130000;
+
+	/** A MissionLaunchDto from /topic/missions: one toast per drone, updated at every step. */
+	function showLaunchToast(launch) {
+		let toast = launchToasts.get(launch.droneId);
+		if (!toast) {
+			toast = { element: null, timer: null };
+			launchToasts.set(launch.droneId, toast);
+		}
+		let cls = 'pending';
+		let duration = TOAST_LAUNCH_ACTIVE_MS;
+		if (launch.status === 'RUNNING') {
+			cls = 'accepted';
+			duration = TOAST_ACCEPTED_MS;
+		} else if (launch.status === 'FAILED') {
+			cls = 'failed';
+			duration = TOAST_REJECTED_MS;
+		}
+		toast.element = renderToast(toast.element, cls, `${label(launch.droneId)} · Görev: ${launch.missionName}`,
+			missions.launchLabel(launch.status), launch.reason);
+		clearTimeout(toast.timer);
+		const element = toast.element;
+		toast.timer = setTimeout(() => {
+			element.remove();
+			if (launchToasts.get(launch.droneId)?.element === element) {
+				launchToasts.delete(launch.droneId);
+			}
+		}, duration);
+		// A toast closed by a click starts again with the next step.
+		element.addEventListener('click', () => launchToasts.delete(launch.droneId), { once: true });
+	}
+
+	/** Drones whose LAND was sent and not refused; the next disarm of one of them is its touchdown. */
+	const landingDrones = new Set();
+
+	function trackLanding(command) {
+		if (command.type === 'LAND') {
+			if (Commands.isFinal(command.status) && command.status !== 'ACCEPTED') {
+				landingDrones.delete(command.droneId);
+			} else {
+				landingDrones.add(command.droneId);
+			}
+		} else if (command.type !== 'FENCE_UPLOAD' && !command.type.startsWith('FAULT_')) {
+			// Another flight command ends the landing.
+			landingDrones.delete(command.droneId);
+		}
 	}
 
 	/** A toast that belongs to no command, e.g. a refused POST. */
@@ -1271,6 +1500,7 @@
 	setInterval(updateAlarmDurations, ALARM_DURATION_REFRESH_MS);
 	loadAlarms();
 	geofences.load();
+	missions.load();
 
 	fetch('/api/sim/status')
 		.then((response) => (response.ok ? response.json() : null))
@@ -1302,9 +1532,11 @@
 			client.subscribe('/topic/commands', (message) => handleCommandEvent(JSON.parse(message.body)));
 			client.subscribe('/topic/geofences', (message) => geofences.setCollection(JSON.parse(message.body)));
 			client.subscribe('/topic/fence', (message) => handleFenceStatus(JSON.parse(message.body)));
+			client.subscribe('/topic/missions', (message) => missions.setChanged(JSON.parse(message.body)));
 			// Events sent while disconnected were missed, so the lists are reloaded on every (re)connect.
 			loadAlarms();
 			geofences.load();
+			missions.load();
 			drones.forEach((entry, droneId) => loadFenceStatus(droneId));
 		},
 		onWebSocketClose: () => setConnection('disconnected'),

@@ -11,6 +11,12 @@ import com.otonomc3.core.command.service.InvalidCommandException;
 import com.otonomc3.core.command.service.SimDisabledException;
 import com.otonomc3.core.command.service.TakeoffInNoFlyZoneException;
 import com.otonomc3.core.drone.service.DroneNotFoundException;
+import com.otonomc3.core.landing.service.LandingBlockedException;
+import com.otonomc3.core.mission.service.InvalidMissionException;
+import com.otonomc3.core.mission.service.MissionBlockedException;
+import com.otonomc3.core.mission.service.MissionLaunchInProgressException;
+import com.otonomc3.core.mission.service.MissionNotFixableException;
+import com.otonomc3.core.mission.service.MissionNotFoundException;
 import com.otonomc3.core.route.service.RouteBlockedException;
 import com.otonomc3.core.geofence.service.GeofenceImportDisabledException;
 import com.otonomc3.core.geofence.service.GeofenceNotFoundException;
@@ -115,6 +121,56 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
 	ProblemDetail handleRouteBlocked(RouteBlockedException e) {
 		ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, e.getMessage());
 		problem.setTitle("Route blocked");
+		problem.setProperty("reason", e.getReason().name());
+		problem.setProperty("zones", e.getZones());
+		return problem;
+	}
+
+	@ExceptionHandler(MissionNotFoundException.class)
+	ProblemDetail handleMissionNotFound(MissionNotFoundException e) {
+		ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, e.getMessage());
+		problem.setTitle("Mission not found");
+		problem.setProperty("missionId", e.getMissionId());
+		return problem;
+	}
+
+	@ExceptionHandler(InvalidMissionException.class)
+	ProblemDetail handleInvalidMission(InvalidMissionException e) {
+		ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, e.getMessage());
+		problem.setTitle("Invalid mission");
+		return problem;
+	}
+
+	@ExceptionHandler(MissionBlockedException.class)
+	ProblemDetail handleMissionBlocked(MissionBlockedException e) {
+		ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, e.getMessage());
+		problem.setTitle("Mission blocked");
+		problem.setProperty("legs", e.getValidation().legs());
+		problem.setProperty("waypointsInZone", e.getValidation().waypointsInZone());
+		problem.setProperty("waypointZones", e.getValidation().waypointZones());
+		return problem;
+	}
+
+	@ExceptionHandler(MissionLaunchInProgressException.class)
+	ProblemDetail handleMissionLaunchInProgress(MissionLaunchInProgressException e) {
+		ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, e.getMessage());
+		problem.setTitle("Mission launch in progress");
+		problem.setProperty("droneId", e.getDroneId());
+		return problem;
+	}
+
+	@ExceptionHandler(MissionNotFixableException.class)
+	ProblemDetail handleMissionNotFixable(MissionNotFixableException e) {
+		ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, e.getMessage());
+		problem.setTitle("Mission not fixable");
+		problem.setProperty("waypointsInZone", e.getWaypointsInZone());
+		return problem;
+	}
+
+	@ExceptionHandler(LandingBlockedException.class)
+	ProblemDetail handleLandingBlocked(LandingBlockedException e) {
+		ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, e.getMessage());
+		problem.setTitle("Landing blocked");
 		problem.setProperty("reason", e.getReason().name());
 		problem.setProperty("zones", e.getZones());
 		return problem;
