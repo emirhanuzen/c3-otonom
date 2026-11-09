@@ -11,6 +11,8 @@ window.OtonomCommands = (() => {
 		RESUME_MISSION: 'Göreve devam',
 		LOITER: 'Bekle',
 		GOTO: 'Noktaya git',
+		TAKEOFF: 'Kalkış',
+		DISARM: 'Motoru kapat',
 		FAULT_BATTERY_DRAIN: 'Bataryayı boşalt',
 		FAULT_GPS_LOSS: 'GPS arızası',
 		FAULT_LOW_ALTITUDE: 'Alçak irtifa',
@@ -74,6 +76,9 @@ window.OtonomCommands = (() => {
 		const base = TYPE_LABELS[command.type] ?? command.type;
 		if (command.type === 'FAULT_GPS_LOSS' && command.params?.enabled != null) {
 			return command.params.enabled ? 'GPS kes' : 'GPS aç';
+		}
+		if (command.type === 'TAKEOFF' && command.params?.alt != null) {
+			return `${base} (${command.params.alt} m)`;
 		}
 		if (command.type === 'FAULT_LINK_DROP' && command.params?.seconds != null) {
 			return `${base} (${command.params.seconds} sn)`;

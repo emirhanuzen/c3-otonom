@@ -70,7 +70,7 @@ command_channel  ->  command_schema  ->  command_executor  ->  mavlink_reader ba
 
 - `command.py`: komut ve sonuç alan modeli, parametre doğrulama; dış kütüphane import etmez.
 - `command_schema.py`: komut/sonuç JSON'u (sözleşme: `docs/contracts/command-v1.md`).
-- `command_executor.py`: komutu MAVLink mesajlarına çevirir, `COMMAND_ACK` / `PARAM_VALUE` cevaplarını bekleyen komutla eşleştirir, zaman aşımını izler.
+- `command_executor.py`: komutu MAVLink mesajlarına çevirir, `COMMAND_ACK` / `PARAM_VALUE` cevaplarını bekleyen komutla eşleştirir, zaman aşımını izler; reddedilen kalkışın sebebi için `PreArm:` ile başlayan `STATUSTEXT` mesajlarını toplar.
 - `command_channel.py`: ayrı bir RabbitMQ bağlantısıyla `edge.commands` kuyruğunu tüketir ve sonuçları yayınlar.
 
 Thread yoktur: komutlar da ana döngüde işlenir ve İHA'nın okunduğu bağlantının üzerinden gönderilir.

@@ -568,9 +568,79 @@ body {
 	background: #1a5fd0;
 }
 
-/* Refused while the drone is on the ground; the button's title says why. */
-.command-buttons button.grounded:disabled {
+/* Refused in the drone's current state (on the ground, already flying...); the button's title says why. */
+.command-controls button.grounded:disabled {
 	cursor: not-allowed;
+}
+
+/* Takeoff altitude, the takeoff button and disarm, below the flight commands. */
+.command-ground {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	margin-top: 6px;
+}
+
+.takeoff-alt {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	font-size: 12px;
+	color: var(--muted);
+	white-space: nowrap;
+}
+
+.takeoff-alt-label {
+	flex: 1;
+}
+
+.takeoff-alt input {
+	width: 3.6em;
+	padding: 3px 4px;
+	border: 1px solid #c9ced4;
+	border-radius: 4px;
+	font: inherit;
+	font-size: 12px;
+}
+
+.takeoff-alt input:invalid {
+	border-color: var(--critical);
+}
+
+.takeoff-alt input:disabled {
+	opacity: 0.5;
+}
+
+.command-ground button {
+	padding: 4px 6px;
+	border: 1px solid #c9ced4;
+	border-radius: 4px;
+	background: #fff;
+	font: inherit;
+	font-size: 12px;
+	cursor: pointer;
+}
+
+.command-ground button:hover:not(:disabled) {
+	background: #eef1f4;
+}
+
+.command-ground button:disabled {
+	cursor: default;
+	opacity: 0.5;
+}
+
+/* The primary action of the ground section. */
+.command-ground .takeoff-button {
+	padding: 6px;
+	border-color: var(--accent);
+	background: var(--accent);
+	color: #fff;
+	font-weight: 600;
+}
+
+.command-ground .takeoff-button:hover:not(:disabled) {
+	background: #1a5fd0;
 }
 
 /* The map waits for a GOTO point. */
@@ -651,6 +721,9 @@ body {
 	margin-top: 2px;
 	color: var(--muted);
 	font-size: 12px;
+	/* The whole detail stays readable: one line per part, long words wrapped. */
+	white-space: pre-line;
+	overflow-wrap: anywhere;
 }
 
 /* --- Test page link ---------------------------------------------------------------- */

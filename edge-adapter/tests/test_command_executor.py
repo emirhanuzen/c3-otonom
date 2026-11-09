@@ -385,3 +385,145 @@ def test_reset_restores_everything_and_cancels_link_drop(executor, reader):
     result = single_result(executor)
     assert result.status is CommandStatus.ACCEPTED
     assert "link drop cancelled" in result.detail
+
+
+# --- Takeoff and disarm ----------------------------------------------------------------
+
+ARM = mavlink.MAV_CMD_COMPONENT_ARM_DISARM
+
+
+def statustext(text):
+    return mavlink.MAVLink_statustext_message(severity=mavlink.MAV_SEVERITY_CRITICAL, text=text.encode())
+
+
+def start_takeoff_until_arm(executor, reader, issued_at=NOW):
+    """TAKEOFF up to the point where it waits for the arm COMMAND_ACK."""
+    executor.handle_message(command("TAKEOFF", {"alt": 60}, issued_at=issued_at))
+    executor.on_mavlink(DRONE, param_value("TKOFF_ALT", 60))
+    executor.on_mavlink(DRONE, ack(mavlink.MAV_CMD_DO_SET_MODE))
+    assert executor.take_results() == []
+
+
+def test_takeoff_sets_altitude_then_mode_then_arms(executor, reader):
+    executor.handle_message(command("TAKEOFF", {"alt": 80}))
+    assert sent_param_sets(reader) == [("TKOFF_ALT", 80.0)]
+    assert len(reader.sent()) == 1          # nothing else before PARAM_VALUE
+
+    executor.on_mavlink(DRONE, param_value("TKOFF_ALT", 80))
+    name, args = reader.sent()[1]
+    assert name == "command_long"
+    assert args[2] == mavlink.MAV_CMD_DO_SET_MODE
+    assert args[4] == mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED
+    assert args[5] == 13
+    assert mavutil.mode_mapping_apm[13] == "TAKEOFF"
+    assert len(reader.sent()) == 2          # no arm before the mode ACK
+
+    executor.on_mavlink(DRONE, ack(mavlink.MAV_CMD_DO_SET_MODE))
+    assert reader.sent()[2] == ("command_long", (DRONE, 1, ARM, 0, 1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+    assert executor.take_results() == []
+
+    executor.on_mavlink(DRONE, ack(ARM))
+    result = single_result(executor)
+    assert result.status is CommandStatus.ACCEPTED
+    assert result.detail == "TKOFF_ALT=80, mode TAKEOFF set, armed"
+
+
+def test_takeoff_without_alt_uses_60_m(executor, reader):
+    executor.handle_message(command("TAKEOFF"))
+    assert sent_param_sets(reader) == [("TKOFF_ALT", 60.0)]
+
+
+def test_takeoff_with_wrong_altitude_back_is_failed_and_not_armed(executor, reader):
+    executor.handle_message(command("TAKEOFF", {"alt": 60}))
+    executor.on_mavlink(DRONE, param_value("TKOFF_ALT", 50))
+
+    assert single_result(executor).status is CommandStatus.FAILED
+    assert len(reader.sent()) == 1
+
+
+def test_takeoff_mode_refused_is_rejected_and_not_armed(executor, reader):
+    executor.handle_message(command("TAKEOFF", {"alt": 60}))
+    executor.on_mavlink(DRONE, param_value("TKOFF_ALT", 60))
+    executor.on_mavlink(DRONE, ack(mavlink.MAV_CMD_DO_SET_MODE, mavlink.MAV_RESULT_DENIED))
+
+    result = single_result(executor)
+    assert result.status is CommandStatus.REJECTED
+    assert "MAV_CMD_DO_SET_MODE" in result.detail
+    assert not [args for name, args in reader.sent() if name == "command_long" and args[2] == ARM]
+
+
+def test_refused_arm_reports_prearm_reasons(executor, reader, clock):
+    clock.advance(10)
+    executor.on_mavlink(DRONE, statustext("PreArm: old reason"))       # more than 3 s before the command
+    clock.advance(3.5)
+    executor.on_mavlink(DRONE, statustext("PreArm: GPS not healthy"))  # 2 s before the command
+    executor.on_mavlink(DRONE, statustext("Some other message"))
+    executor.on_mavlink(4, statustext("PreArm: of another drone"))
+    clock.advance(2)
+
+    start_takeoff_until_arm(executor, reader, issued_at=clock.utc)
+    executor.on_mavlink(DRONE, ack(ARM, mavlink.MAV_RESULT_FAILED))
+    # ArduPilot sends the reasons after the ACK; the result waits for them.
+    assert executor.take_results() == []
+    executor.on_mavlink(DRONE, statustext("PreArm: Throttle not zero"))
+    executor.on_mavlink(DRONE, statustext("PreArm: GPS not healthy"))  # repeated
+    clock.advance(0.9)
+    executor.tick()
+    assert executor.take_results() == []
+
+    clock.advance(0.1)
+    executor.tick()
+    result = single_result(executor)
+    assert result.status is CommandStatus.REJECTED
+    assert result.detail == ("arming refused by the aircraft: MAV_RESULT_FAILED; "
+                             "PreArm: GPS not healthy; PreArm: Throttle not zero")
+
+
+def test_refused_arm_without_prearm_messages_is_rejected(executor, reader, clock):
+    start_takeoff_until_arm(executor, reader)
+    executor.on_mavlink(DRONE, ack(ARM, mavlink.MAV_RESULT_DENIED))
+    clock.advance(1)
+    executor.tick()
+
+    result = single_result(executor)
+    assert result.status is CommandStatus.REJECTED
+    assert result.detail == "arming refused by the aircraft: MAV_RESULT_DENIED"
+
+
+@pytest.mark.parametrize("answered", [0, 1, 2])
+def test_takeoff_step_without_answer_is_timeout(executor, reader, clock, answered):
+    executor.handle_message(command("TAKEOFF", {"alt": 60}))
+    replies = [param_value("TKOFF_ALT", 60), ack(mavlink.MAV_CMD_DO_SET_MODE)]
+    for reply in replies[:answered]:
+        clock.advance(4)                     # each step has its own 5 s
+        executor.on_mavlink(DRONE, reply)
+    clock.advance(4.9)
+    executor.tick()
+    assert executor.take_results() == []
+
+    clock.advance(0.1)
+    executor.tick()
+    result = single_result(executor)
+    assert result.status is CommandStatus.TIMEOUT
+    expected = ["PARAM_VALUE for TKOFF_ALT", "COMMAND_ACK for MAV_CMD_DO_SET_MODE",
+                "COMMAND_ACK for MAV_CMD_COMPONENT_ARM_DISARM"][answered]
+    assert expected in result.detail
+
+
+def test_disarm_without_force(executor, reader):
+    executor.handle_message(command("DISARM"))
+    assert reader.sent() == [("command_long", (DRONE, 1, ARM, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0))]
+
+    executor.on_mavlink(DRONE, ack(ARM))
+    result = single_result(executor)
+    assert result.status is CommandStatus.ACCEPTED
+    assert result.detail == "disarmed"
+
+
+def test_refused_disarm_is_rejected(executor):
+    executor.handle_message(command("DISARM"))
+    executor.on_mavlink(DRONE, ack(ARM, mavlink.MAV_RESULT_DENIED))
+
+    result = single_result(executor)
+    assert result.status is CommandStatus.REJECTED
+    assert "MAV_RESULT_DENIED" in result.detail

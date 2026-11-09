@@ -15,6 +15,15 @@ public enum CommandType {
 	/** Params: lat, lon, alt (metres above home). */
 	GOTO(false, true),
 
+	/**
+	 * Params: alt (metres above home, 30..300, default 60). Only allowed on the ground and
+	 * outside the effective no-fly zones; see CommandService.
+	 */
+	TAKEOFF(false, false),
+
+	/** Stops the motors (no force). Only allowed while the drone stands still on the ground. */
+	DISARM(false, false),
+
 	FAULT_BATTERY_DRAIN(true, false),
 
 	/** Params: enabled (true = GPS lost). */

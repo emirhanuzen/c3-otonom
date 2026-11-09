@@ -23,6 +23,8 @@ import com.otonomc3.core.drone.service.DroneLiveState;
 import com.otonomc3.core.drone.service.DroneLiveStateService;
 import com.otonomc3.core.drone.service.DroneNotFoundException;
 import com.otonomc3.core.drone.service.LinkStatus;
+import com.otonomc3.core.geofence.service.GeofenceChecker;
+import com.otonomc3.core.geofence.service.GeofenceStatus;
 import com.otonomc3.core.telemetry.dto.TelemetryMessageDto;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Limit;
@@ -59,6 +61,7 @@ public class CommandService {
 	private final CommandRepository repository;
 	private final CommandPublisher publisher;
 	private final DroneLiveStateService liveStateService;
+	private final GeofenceChecker geofenceChecker;
 	private final SimpMessageSendingOperations messagingTemplate;
 	private final JsonMapper jsonMapper;
 	private final Clock clock;
@@ -66,11 +69,12 @@ public class CommandService {
 	private final boolean simEnabled;
 
 	public CommandService(CommandRepository repository, CommandPublisher publisher,
-			DroneLiveStateService liveStateService, SimpMessageSendingOperations messagingTemplate,
-			JsonMapper jsonMapper, Clock clock, CommandProperties properties, SimProperties simProperties) {
+			DroneLiveStateService liveStateService, GeofenceChecker geofenceChecker,
+			SimpMessageSendingOperations messagingTemplate, JsonMapper jsonMapper, Clock clock, CommandProperties properties, SimProperties simProperties) {
 		this.repository = repository;
 		this.publisher = publisher;
 		this.liveStateService = liveStateService;
+		this.geofenceChecker = geofenceChecker;
 		this.messagingTemplate = messagingTemplate;
 		this.jsonMapper = jsonMapper;
 		this.clock = clock;
@@ -88,6 +92,9 @@ public class CommandService {
 	 * @throws DroneNotOnlineException  when the drone's link is not ONLINE
 	 * @throws DroneOnGroundException   for GOTO, LOITER or RESUME_MISSION while the drone's latest
 	 *                                  telemetry says it is disarmed or below 10 m relative altitude
+	 * @throws DroneInFlightException   for TAKEOFF while armed at or above 10 m relative altitude, or for
+	 *                                  DISARM at or above 5 m relative altitude or 3 m/s ground speed
+	 * @throws TakeoffInNoFlyZoneException for TAKEOFF while the drone is inside an effective no-fly zone
 	 */
 	public CommandDto issue(int droneId, CommandType type, Map<String, Object> rawParams) {
 		Map<String, Object> params = CommandValidator.validate(type, rawParams);
@@ -100,6 +107,12 @@ public class CommandService {
 		}
 		if (type.requiresAirborne()) {
 			checkAirborne(state);
+		}
+		if (type == CommandType.TAKEOFF) {
+			checkTakeoff(state);
+		}
+		if (type == CommandType.DISARM) {
+			checkDisarm(state);
 		}
 
 		CommandEntity entity = new CommandEntity();
@@ -130,11 +143,50 @@ public class CommandService {
 	 */
 	private static void checkAirborne(DroneLiveState state) {
 		TelemetryMessageDto message = state.message();
-		Boolean armed = message.status() == null ? null : message.status().armed();
-		Double altRel = message.position() == null ? null : message.position().altRel();
+		Boolean armed = armed(message);
+		Double altRel = altRel(message);
 		if (Boolean.FALSE.equals(armed) || (altRel != null && altRel < CommandValidator.MIN_AIRBORNE_ALT_REL)) {
 			throw new DroneOnGroundException(state.droneId(), armed, altRel);
 		}
+	}
+
+	/** Like checkAirborne, unknown values never refuse the command. */
+	private void checkTakeoff(DroneLiveState state) {
+		TelemetryMessageDto message = state.message();
+		Boolean armed = armed(message);
+		Double altRel = altRel(message);
+		if (Boolean.TRUE.equals(armed) && altRel != null && altRel >= CommandValidator.MIN_AIRBORNE_ALT_REL) {
+			throw new DroneInFlightException(DroneInFlightException.ALREADY_AIRBORNE, state.droneId(),
+					CommandType.TAKEOFF, armed, altRel, groundSpeed(message));
+		}
+		// A drone without a known position is left out of the query's result and let through.
+		GeofenceStatus zones = geofenceChecker.query(List.of(state), clock.instant()).get(state.droneId());
+		if (zones != null && !zones.insideZones().isEmpty()) {
+			throw new TakeoffInNoFlyZoneException(state.droneId(), zones.insideZones());
+		}
+	}
+
+	private static void checkDisarm(DroneLiveState state) {
+		TelemetryMessageDto message = state.message();
+		Double altRel = altRel(message);
+		Double groundSpeed = groundSpeed(message);
+		if ((altRel != null && altRel >= CommandValidator.DISARM_MAX_ALT_REL)
+				|| (groundSpeed != null && groundSpeed >= CommandValidator.DISARM_MAX_GROUND_SPEED)) {
+			throw new DroneInFlightException(DroneInFlightException.DISARM_IN_FLIGHT, state.droneId(),
+					CommandType.DISARM, armed(message), altRel, groundSpeed);
+		}
+	}
+
+	private static Boolean armed(TelemetryMessageDto message) {
+		return message.status() == null ? null : message.status().armed();
+	}
+
+	private static Double altRel(TelemetryMessageDto message) {
+		return message.position() == null ? null : message.position().altRel();
+	}
+
+	private static Double groundSpeed(TelemetryMessageDto message) {
+		return message.velocity() == null ? null : message.velocity().groundSpeed();
 	}
 
 	/** Applies a result from the edge adapter; unknown commands and invalid statuses are logged and skipped. */

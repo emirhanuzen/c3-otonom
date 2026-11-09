@@ -53,6 +53,18 @@ def test_goto_params_are_normalized_to_floats():
     assert command.params == {"lat": 38.6, "lon": 39.0, "alt": 120.0}
 
 
+def test_takeoff_alt_defaults_to_60_and_is_normalized():
+    assert parse_command(body(type="TAKEOFF")).params == {"alt": 60.0}
+    assert parse_command(body(type="TAKEOFF", params={"alt": 30})).params == {"alt": 30.0}
+    assert parse_command(body(type="TAKEOFF", params={"alt": 300})).params == {"alt": 300.0}
+
+
+def test_disarm_takes_no_params():
+    command = parse_command(body(type="DISARM", params={"force": True}))
+    assert command.type is CommandType.DISARM
+    assert command.params == {}
+
+
 def test_extra_params_are_ignored():
     command = parse_command(body(type="FAULT_GPS_LOSS", params={"enabled": True, "note": "x"}))
     assert command.params == {"enabled": True}
@@ -65,6 +77,10 @@ def test_extra_params_are_ignored():
     ("GOTO", {"lat": 38.6, "lon": 39.2, "alt": -1}),
     ("GOTO", {"lat": "38.6", "lon": 39.2, "alt": 100}),
     ("GOTO", {"lat": True, "lon": 39.2, "alt": 100}),
+    ("TAKEOFF", {"alt": 29}),
+    ("TAKEOFF", {"alt": 301}),
+    ("TAKEOFF", {"alt": "60"}),
+    ("TAKEOFF", {"alt": None}),
     ("FAULT_GPS_LOSS", {}),
     ("FAULT_GPS_LOSS", {"enabled": 1}),
     ("FAULT_LINK_DROP", {}),

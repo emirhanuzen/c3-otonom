@@ -4,10 +4,12 @@ import com.otonomc3.core.alarm.service.AlarmNotFoundException;
 import com.otonomc3.core.alarm.service.InvalidAlarmQueryException;
 import com.otonomc3.core.command.service.CommandNotFoundException;
 import com.otonomc3.core.command.service.CommandValidator;
+import com.otonomc3.core.command.service.DroneInFlightException;
 import com.otonomc3.core.command.service.DroneNotOnlineException;
 import com.otonomc3.core.command.service.DroneOnGroundException;
 import com.otonomc3.core.command.service.InvalidCommandException;
 import com.otonomc3.core.command.service.SimDisabledException;
+import com.otonomc3.core.command.service.TakeoffInNoFlyZoneException;
 import com.otonomc3.core.drone.service.DroneNotFoundException;
 import com.otonomc3.core.geofence.service.GeofenceImportDisabledException;
 import com.otonomc3.core.geofence.service.GeofenceNotFoundException;
@@ -84,6 +86,27 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
 		problem.setProperty("armed", e.getArmed());
 		problem.setProperty("altRel", e.getAltRel());
 		problem.setProperty("minAltRel", CommandValidator.MIN_AIRBORNE_ALT_REL);
+		return problem;
+	}
+
+	@ExceptionHandler(DroneInFlightException.class)
+	ProblemDetail handleDroneInFlight(DroneInFlightException e) {
+		ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, e.getMessage());
+		problem.setTitle("Drone in flight");
+		problem.setProperty("droneId", e.getDroneId());
+		problem.setProperty("commandType", e.getType());
+		problem.setProperty("armed", e.getArmed());
+		problem.setProperty("altRel", e.getAltRel());
+		problem.setProperty("groundSpeed", e.getGroundSpeed());
+		return problem;
+	}
+
+	@ExceptionHandler(TakeoffInNoFlyZoneException.class)
+	ProblemDetail handleTakeoffInNoFlyZone(TakeoffInNoFlyZoneException e) {
+		ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, e.getMessage());
+		problem.setTitle("Takeoff in no-fly zone");
+		problem.setProperty("droneId", e.getDroneId());
+		problem.setProperty("zones", e.getZones());
 		return problem;
 	}
 

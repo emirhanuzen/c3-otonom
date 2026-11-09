@@ -18,6 +18,8 @@ class CommandType(enum.Enum):
     RESUME_MISSION = "RESUME_MISSION"            # flight mode AUTO
     LOITER = "LOITER"                            # flight mode LOITER
     GOTO = "GOTO"                                # params: lat, lon, alt (metres above home)
+    TAKEOFF = "TAKEOFF"                          # params: alt (30..300 m above home, default 60)
+    DISARM = "DISARM"                            # stop the motors; refused by the autopilot in flight
     # Simulator faults; they only work against SITL, whose SIM_* parameters they change.
     FAULT_BATTERY_DRAIN = "FAULT_BATTERY_DRAIN"
     FAULT_GPS_LOSS = "FAULT_GPS_LOSS"            # params: enabled (true = GPS lost)
@@ -36,6 +38,9 @@ class CommandStatus(enum.Enum):
 
 LINK_DROP_MIN_S = 1
 LINK_DROP_MAX_S = 60
+TAKEOFF_MIN_ALT_M = 30
+TAKEOFF_MAX_ALT_M = 300
+TAKEOFF_DEFAULT_ALT_M = 60
 
 
 @dataclass(frozen=True)
@@ -80,6 +85,12 @@ def validate_params(command_type, params):
         if alt < 0:
             raise InvalidParams(f"alt must not be negative, was {alt}")
         return {"lat": lat, "lon": lon, "alt": alt}
+
+    if command_type is CommandType.TAKEOFF:
+        alt = _number(params, "alt") if "alt" in params else float(TAKEOFF_DEFAULT_ALT_M)
+        if not TAKEOFF_MIN_ALT_M <= alt <= TAKEOFF_MAX_ALT_M:
+            raise InvalidParams(f"alt must be between {TAKEOFF_MIN_ALT_M} and {TAKEOFF_MAX_ALT_M}, was {alt}")
+        return {"alt": alt}
 
     if command_type is CommandType.FAULT_GPS_LOSS:
         enabled = params.get("enabled")

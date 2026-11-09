@@ -12,10 +12,17 @@ public final class CommandValidator {
 
 	public static final double GOTO_MIN_ALT = 30;
 	public static final double GOTO_MAX_ALT = 500;
+	public static final double TAKEOFF_MIN_ALT = 30;
+	public static final double TAKEOFF_MAX_ALT = 300;
+	public static final double TAKEOFF_DEFAULT_ALT = 60;
 	public static final double LINK_DROP_MIN_SECONDS = 1;
 	public static final double LINK_DROP_MAX_SECONDS = 60;
 	/** A drone below this relative altitude (m) counts as on the ground for the types that require flight. */
 	public static final double MIN_AIRBORNE_ALT_REL = 10;
+	/** DISARM is refused at or above this relative altitude (m)... */
+	public static final double DISARM_MAX_ALT_REL = 5;
+	/** ...or at or above this ground speed (m/s). */
+	public static final double DISARM_MAX_GROUND_SPEED = 3;
 
 	private CommandValidator() {
 	}
@@ -35,6 +42,8 @@ public final class CommandValidator {
 				result.put("lon", number(type, source, "lon", -180, 180));
 				result.put("alt", number(type, source, "alt", GOTO_MIN_ALT, GOTO_MAX_ALT));
 			}
+			case TAKEOFF -> result.put("alt", source.get("alt") == null ? TAKEOFF_DEFAULT_ALT
+					: number(type, source, "alt", TAKEOFF_MIN_ALT, TAKEOFF_MAX_ALT));
 			case FAULT_GPS_LOSS -> {
 				if (!(source.get("enabled") instanceof Boolean enabled)) {
 					throw new InvalidCommandException(type + ": enabled (true or false) is required");

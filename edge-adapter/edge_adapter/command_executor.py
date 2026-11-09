@@ -4,8 +4,8 @@ Carries out commands on the aircraft over MAVLink.
 Everything runs in the main loop's thread, the only one that touches the
 pymavlink connections:
   - handle_message() is called with every command taken from RabbitMQ;
-  - on_mavlink() is called by MavlinkReader.poll() with every COMMAND_ACK and
-    PARAM_VALUE an autopilot sends;
+  - on_mavlink() is called by MavlinkReader.poll() with every COMMAND_ACK,
+    PARAM_VALUE and STATUSTEXT an autopilot sends;
   - tick() is called once per loop to detect timeouts.
 
 A command is sent on the same connection the aircraft is read from, and its
@@ -37,12 +37,23 @@ mavlink = mavutil.mavlink
 
 REPLY_TIMEOUT_S = 5    # each awaited reply (COMMAND_ACK, PARAM_VALUE) must arrive within this
 MAX_COMMAND_AGE_S = 10  # a command issued longer ago than this is not carried out (EXPIRED)
+# A refused TAKEOFF reports the "PreArm:" STATUSTEXTs received from this long before
+# the command started until it ended.
+PREARM_WINDOW_S = 3
+# ArduPilot sends the COMMAND_ACK of a refused arm at once but queues the STATUSTEXTs
+# with the reasons, so they arrive after it; they are waited for this long.
+PREARM_GRACE_S = 1
+PREARM_PREFIX = "PreArm:"
+PREARM_MEMORY = 20      # PreArm messages kept per aircraft
 
 AUTOPILOT = mavlink.MAV_COMP_ID_AUTOPILOT1
 
 # ArduPlane custom_mode numbers (mavutil.mode_mapping_apm).
 PLANE_MODE_AUTO = 10
 PLANE_MODE_LOITER = 12
+PLANE_MODE_TAKEOFF = 13
+
+PARAM_TAKEOFF_ALT = "TKOFF_ALT"              # metres
 
 # SITL parameters used by the fault commands.
 PARAM_BATTERY_CAPACITY = "SIM_BATT_CAP_AH"   # amp-hours
@@ -63,6 +74,8 @@ class _Await:
     """A reply a command is waiting for."""
     description: str                  # used in the TIMEOUT detail, e.g. "COMMAND_ACK for MAV_CMD_..."
     matches: Callable[[object], bool]
+    timeout_s: float | None = None    # None: the executor's reply_timeout_s
+    optional: bool = False            # True: at the deadline the command resumes with None instead of TIMEOUT
 
 
 class _Outcome(Exception):
@@ -99,6 +112,7 @@ class CommandExecutor:
         self._results = []                 # finished, not yet taken by the main loop
         self._gps_param = {}               # drone_id -> PARAM_GPS_ENABLE or PARAM_GPS_DISABLE
         self._link_drop_until = {}         # drone_id -> monotonic time the telemetry drop ends
+        self._prearm = defaultdict(lambda: deque(maxlen=PREARM_MEMORY))  # drone_id -> (monotonic, text)
 
     # --- Called from the main loop ----------------------------------------------
     def handle_message(self, body):
@@ -117,7 +131,11 @@ class CommandExecutor:
         self._start_next(command.drone_id)
 
     def on_mavlink(self, drone_id, msg):
-        """A COMMAND_ACK or PARAM_VALUE from the autopilot of drone_id."""
+        """A COMMAND_ACK, PARAM_VALUE or STATUSTEXT from the autopilot of drone_id."""
+        if msg.get_type() == "STATUSTEXT":
+            text = _statustext(msg)
+            if text.startswith(PREARM_PREFIX):
+                self._prearm[drone_id].append((self._monotonic(), text))
         run = self._running.get(drone_id)
         if run is None or run.wait is None or not run.wait.matches(msg):
             return
@@ -129,8 +147,11 @@ class CommandExecutor:
         now = self._monotonic()
         for drone_id, run in list(self._running.items()):
             if run.wait is not None and now >= run.deadline:
-                self._finish_run(run, CommandStatus.TIMEOUT,
-                                 f"no {run.wait.description} within {self.reply_timeout_s:g} s")
+                if run.wait.optional:
+                    self._advance(run, None)
+                else:
+                    self._finish_run(run, CommandStatus.TIMEOUT,
+                                     f"no {run.wait.description} within {self.reply_timeout_s:g} s")
         for drone_id in list(self._queues):
             self._start_next(drone_id)
         for drone_id, until in list(self._link_drop_until.items()):
@@ -184,7 +205,8 @@ class CommandExecutor:
         except OSError as err:
             self._finish_run(run, CommandStatus.FAILED, f"sending to the aircraft failed: {err}")
             return
-        run.deadline = self._monotonic() + self.reply_timeout_s
+        timeout = run.wait.timeout_s if run.wait.timeout_s is not None else self.reply_timeout_s
+        run.deadline = self._monotonic() + timeout
 
     def _finish_run(self, run, status, detail):
         del self._running[run.command.drone_id]
@@ -214,6 +236,12 @@ class CommandExecutor:
             return (yield from self._set_mode(drone_id, "LOITER", PLANE_MODE_LOITER))
         if kind is CommandType.GOTO:
             return (yield from self._reposition(drone_id, params["lat"], params["lon"], params["alt"]))
+        if kind is CommandType.TAKEOFF:
+            return (yield from self._takeoff(drone_id, params["alt"]))
+        if kind is CommandType.DISARM:
+            # param1 0 = disarm; param2 stays 0 (no force), so the autopilot refuses it in flight.
+            yield from self._command_long(drone_id, mavlink.MAV_CMD_COMPONENT_ARM_DISARM, 0)
+            return "disarmed"
         if kind is CommandType.FAULT_BATTERY_DRAIN:
             return (yield from self._set_param(drone_id, PARAM_BATTERY_CAPACITY, BATTERY_DRAIN_CAPACITY_AH))
         if kind is CommandType.FAULT_GPS_LOSS:
@@ -241,11 +269,40 @@ class CommandExecutor:
         return conn
 
     def _command_long(self, drone_id, command, *params):
-        """Send a COMMAND_LONG and wait for its COMMAND_ACK."""
+        """Send a COMMAND_LONG and wait for its COMMAND_ACK; a refused one ends the command REJECTED."""
+        ack = yield from self._command_long_ack(drone_id, command, *params)
+        return self._check_ack(command, ack)
+
+    def _command_long_ack(self, drone_id, command, *params):
+        """Send a COMMAND_LONG and return its final COMMAND_ACK, whatever its result."""
         p = list(params) + [0.0] * (7 - len(params))
         self._connection(drone_id).mav.command_long_send(drone_id, AUTOPILOT, command, 0, *p)
-        ack = yield self._await_ack(command)
-        return self._check_ack(command, ack)
+        return (yield self._await_ack(command))
+
+    def _takeoff(self, drone_id, alt):
+        """TKOFF_ALT, then mode TAKEOFF, then arm: ArduPlane takes off as soon as it is armed."""
+        prearm_since = self._monotonic() - PREARM_WINDOW_S
+        altitude = yield from self._set_param(drone_id, PARAM_TAKEOFF_ALT, alt)
+        yield from self._set_mode(drone_id, "TAKEOFF", PLANE_MODE_TAKEOFF)
+        command = mavlink.MAV_CMD_COMPONENT_ARM_DISARM
+        ack = yield from self._command_long_ack(drone_id, command, 1)
+        if ack.result != mavlink.MAV_RESULT_ACCEPTED:
+            # Let the queued "PreArm:" STATUSTEXTs arrive; this wait never times out the command.
+            yield _Await("PreArm STATUSTEXT", lambda m: False, timeout_s=PREARM_GRACE_S, optional=True)
+            detail = f"arming refused by the aircraft: {_result_name(ack.result)}"
+            reasons = self._prearm_reasons(drone_id, prearm_since)
+            if reasons:
+                detail += "; " + "; ".join(reasons)
+            raise _Outcome(CommandStatus.REJECTED, detail)
+        return f"{altitude}, mode TAKEOFF set, armed"
+
+    def _prearm_reasons(self, drone_id, since):
+        """Distinct PreArm texts received at or after monotonic time `since`, oldest first."""
+        reasons = []
+        for at, text in self._prearm.get(drone_id, ()):
+            if at >= since and text not in reasons:
+                reasons.append(text)
+        return reasons
 
     def _set_mode(self, drone_id, name, custom_mode):
         yield from self._command_long(drone_id, mavlink.MAV_CMD_DO_SET_MODE,
@@ -325,6 +382,14 @@ def _param_id(msg):
     if isinstance(value, bytes):
         value = value.decode("ascii", errors="replace")
     return value.rstrip("\x00")
+
+
+def _statustext(msg):
+    """STATUSTEXT.text as a plain string; it may be bytes padded with NULs."""
+    value = msg.text
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="replace")
+    return value.rstrip("\x00").strip()
 
 
 def _command_name(command):

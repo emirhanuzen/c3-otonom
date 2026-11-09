@@ -38,6 +38,8 @@ import com.otonomc3.core.drone.service.DroneLiveState;
 import com.otonomc3.core.drone.service.DroneLiveStateService;
 import com.otonomc3.core.drone.service.DroneNotFoundException;
 import com.otonomc3.core.drone.service.LinkStatus;
+import com.otonomc3.core.geofence.service.GeofenceChecker;
+import com.otonomc3.core.geofence.service.GeofenceStatus;
 import com.otonomc3.core.telemetry.dto.TelemetryMessageDto;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -66,6 +68,9 @@ class CommandServiceTest {
 
 	@Mock
 	private SimpMessageSendingOperations messagingTemplate;
+
+	@Mock
+	private GeofenceChecker geofenceChecker;
 
 	/** In-memory stand-in for the table, driven by the repository mock. */
 	private final Map<UUID, CommandEntity> table = new HashMap<>();
@@ -101,7 +106,7 @@ class CommandServiceTest {
 	}
 
 	private CommandService service(boolean simEnabled) {
-		return new CommandService(repository, publisher, liveStateService, messagingTemplate,
+		return new CommandService(repository, publisher, liveStateService, geofenceChecker, messagingTemplate,
 				JsonMapper.builder().build(), clock,
 				new CommandProperties(Duration.ofSeconds(12), Duration.ofSeconds(5)), new SimProperties(simEnabled));
 	}
@@ -231,6 +236,143 @@ class CommandServiceTest {
 		when(liveStateService.find(1)).thenReturn(Optional.of(state(1, false, 0.0)));
 
 		assertThat(service(true).issue(1, type, null).status()).isEqualTo(CommandStatus.PENDING);
+	}
+
+	// --- takeoff and disarm -----------------------------------------------------------
+
+	@Test
+	void takeoffFromTheGroundOutsideZonesIsSentWithDefaultAltitude() throws Exception {
+		DroneLiveState grounded = state(1, false, 0.2, 0.0);
+		when(liveStateService.find(1)).thenReturn(Optional.of(grounded));
+		when(geofenceChecker.query(List.of(grounded), T0)).thenReturn(Map.of(1, GeofenceStatus.NONE));
+
+		CommandDto command = service(false).issue(1, CommandType.TAKEOFF, null);
+
+		assertThat(command.status()).isEqualTo(CommandStatus.PENDING);
+		assertThat(command.params()).isEqualTo(Map.of("alt", 60.0));
+		ArgumentCaptor<CommandMessageDto> message = ArgumentCaptor.forClass(CommandMessageDto.class);
+		verify(publisher).publish(message.capture());
+		assertThat(message.getValue().type()).isEqualTo(CommandType.TAKEOFF);
+		assertThat(message.getValue().params()).isEqualTo(Map.of("alt", 60.0));
+	}
+
+	@Test
+	void takeoffWhileAirborneIsAConflict() throws Exception {
+		when(liveStateService.find(1)).thenReturn(Optional.of(state(1, true, 10.0, 22.0)));
+
+		assertThatThrownBy(() -> service(false).issue(1, CommandType.TAKEOFF, Map.of("alt", 80)))
+				.isInstanceOf(DroneInFlightException.class)
+				.hasMessage("İHA zaten havada")
+				.extracting("armed", "altRel").containsExactly(true, 10.0);
+		verify(geofenceChecker, never()).query(any(), any());
+		verify(repository, never()).save(any());
+		verify(publisher, never()).publish(any());
+	}
+
+	@Test
+	void takeoffWhileArmedOnTheGroundOrDisarmedHighIsSent() throws Exception {
+		// Armed but still below 10 m (e.g. on the runway), and disarmed with a stale altitude.
+		for (DroneLiveState state : List.of(state(1, true, 9.9, 0.0), state(1, false, 50.0, 0.0))) {
+			when(liveStateService.find(1)).thenReturn(Optional.of(state));
+			when(geofenceChecker.query(any(), any())).thenReturn(Map.of(1, GeofenceStatus.NONE));
+
+			assertThat(service(false).issue(1, CommandType.TAKEOFF, null).status()).isEqualTo(CommandStatus.PENDING);
+		}
+	}
+
+	@Test
+	void takeoffInsideANoFlyZoneIsAConflict() throws Exception {
+		DroneLiveState grounded = state(1, false, 0.0, 0.0);
+		when(liveStateService.find(1)).thenReturn(Optional.of(grounded));
+		when(geofenceChecker.query(List.of(grounded), T0)).thenReturn(Map.of(1,
+				new GeofenceStatus(List.of("Havalimanı", "Askeri alan"), List.of("Havalimanı", "Askeri alan"))));
+
+		assertThatThrownBy(() -> service(false).issue(1, CommandType.TAKEOFF, Map.of("alt", 60)))
+				.isInstanceOf(TakeoffInNoFlyZoneException.class)
+				.hasMessage("Kalkış noktası yasak bölgede: Havalimanı, Askeri alan")
+				.extracting("zones").isEqualTo(List.of("Havalimanı", "Askeri alan"));
+		verify(repository, never()).save(any());
+		verify(publisher, never()).publish(any());
+	}
+
+	@Test
+	void takeoffWithOnlyAPredictedZoneIsSent() throws Exception {
+		DroneLiveState grounded = state(1, false, 0.0, 0.0);
+		when(liveStateService.find(1)).thenReturn(Optional.of(grounded));
+		when(geofenceChecker.query(List.of(grounded), T0))
+				.thenReturn(Map.of(1, new GeofenceStatus(List.of(), List.of("Havalimanı"))));
+
+		assertThat(service(false).issue(1, CommandType.TAKEOFF, null).status()).isEqualTo(CommandStatus.PENDING);
+	}
+
+	@Test
+	void takeoffWithUnknownPositionIsSent() throws Exception {
+		// state(1, ONLINE) has no position: the checker leaves it out of its result.
+		when(geofenceChecker.query(any(), any())).thenReturn(Map.of());
+
+		assertThat(service(false).issue(1, CommandType.TAKEOFF, null).status()).isEqualTo(CommandStatus.PENDING);
+	}
+
+	@Test
+	void takeoffAltitudeMustBeBetween30And300() {
+		assertThat(CommandValidator.validate(CommandType.TAKEOFF, Map.of("alt", 30))).isEqualTo(Map.of("alt", 30.0));
+		assertThat(CommandValidator.validate(CommandType.TAKEOFF, Map.of("alt", 300))).isEqualTo(Map.of("alt", 300.0));
+		assertThat(CommandValidator.validate(CommandType.TAKEOFF, Map.of())).isEqualTo(Map.of("alt", 60.0));
+		assertThatThrownBy(() -> CommandValidator.validate(CommandType.TAKEOFF, Map.of("alt", 29.9)))
+				.isInstanceOf(InvalidCommandException.class).hasMessageContaining("alt must be between 30 and 300");
+		assertThatThrownBy(() -> CommandValidator.validate(CommandType.TAKEOFF, Map.of("alt", 301)))
+				.isInstanceOf(InvalidCommandException.class);
+		assertThatThrownBy(() -> CommandValidator.validate(CommandType.TAKEOFF, Map.of("alt", "60")))
+				.isInstanceOf(InvalidCommandException.class);
+	}
+
+	@Test
+	void disarmOnTheGroundIsSent() throws Exception {
+		when(liveStateService.find(1)).thenReturn(Optional.of(state(1, true, 4.9, 2.9)));
+
+		CommandDto command = service(false).issue(1, CommandType.DISARM, Map.of("force", true));
+
+		assertThat(command.status()).isEqualTo(CommandStatus.PENDING);
+		assertThat(command.params()).isEmpty();
+		verify(publisher).publish(any());
+	}
+
+	@Test
+	void disarmAtFiveMetresIsAConflict() throws Exception {
+		when(liveStateService.find(1)).thenReturn(Optional.of(state(1, true, 5.0, 0.0)));
+
+		assertThatThrownBy(() -> service(false).issue(1, CommandType.DISARM, null))
+				.isInstanceOf(DroneInFlightException.class)
+				.hasMessage("İHA havadayken motor kapatılamaz")
+				.extracting("altRel", "groundSpeed").containsExactly(5.0, 0.0);
+		verify(repository, never()).save(any());
+		verify(publisher, never()).publish(any());
+	}
+
+	@Test
+	void disarmAtThreeMetresPerSecondIsAConflict() throws Exception {
+		// Rolling on the runway: low, but moving.
+		when(liveStateService.find(1)).thenReturn(Optional.of(state(1, true, 0.0, 3.0)));
+
+		assertThatThrownBy(() -> service(false).issue(1, CommandType.DISARM, null))
+				.isInstanceOf(DroneInFlightException.class)
+				.hasMessage("İHA havadayken motor kapatılamaz");
+		verify(publisher, never()).publish(any());
+	}
+
+	@Test
+	void disarmWithUnknownAltitudeAndSpeedIsSent() throws Exception {
+		assertThat(service(false).issue(1, CommandType.DISARM, null).status()).isEqualTo(CommandStatus.PENDING);
+	}
+
+	@ParameterizedTest
+	@EnumSource(value = CommandType.class, names = { "GOTO", "LOITER", "RESUME_MISSION" })
+	void flightCommandsAreStillBlockedOnTheGround(CommandType type) {
+		when(liveStateService.find(1)).thenReturn(Optional.of(state(1, true, 0.0, 0.0)));
+
+		assertThatThrownBy(() -> service(false).issue(1, type, type == CommandType.GOTO ? GOTO_PARAMS : null))
+				.isInstanceOf(DroneOnGroundException.class)
+				.hasMessage("İHA yerde, önce kalkış yapılmalı");
 	}
 
 	// --- validation ------------------------------------------------------------------
@@ -390,6 +532,15 @@ class CommandServiceTest {
 		TelemetryMessageDto message = new TelemetryMessageDto(2, UUID.randomUUID(), droneId, 1L, T0,
 				new TelemetryMessageDto.Position(38.6, 39.3, 990.0, altRel, 90.0), null, null, null,
 				new TelemetryMessageDto.Status("GUIDED", armed));
+		return new DroneLiveState(message, T0, Duration.ZERO, LinkStatus.ONLINE);
+	}
+
+	/** ONLINE, with the given armed state, relative altitude and ground speed. */
+	private static DroneLiveState state(int droneId, Boolean armed, Double altRel, Double groundSpeed) {
+		TelemetryMessageDto message = new TelemetryMessageDto(2, UUID.randomUUID(), droneId, 1L, T0,
+				new TelemetryMessageDto.Position(38.6, 39.3, 990.0, altRel, 90.0),
+				new TelemetryMessageDto.Velocity(groundSpeed, null, null), null, null,
+				new TelemetryMessageDto.Status("MANUAL", armed));
 		return new DroneLiveState(message, T0, Duration.ZERO, LinkStatus.ONLINE);
 	}
 

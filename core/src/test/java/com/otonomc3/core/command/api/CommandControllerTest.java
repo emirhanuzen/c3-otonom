@@ -21,10 +21,12 @@ import com.otonomc3.core.command.service.CommandNotFoundException;
 import com.otonomc3.core.command.service.CommandService;
 import com.otonomc3.core.command.service.CommandStatus;
 import com.otonomc3.core.command.service.CommandType;
+import com.otonomc3.core.command.service.DroneInFlightException;
 import com.otonomc3.core.command.service.DroneNotOnlineException;
 import com.otonomc3.core.command.service.DroneOnGroundException;
 import com.otonomc3.core.command.service.InvalidCommandException;
 import com.otonomc3.core.command.service.SimDisabledException;
+import com.otonomc3.core.command.service.TakeoffInNoFlyZoneException;
 import com.otonomc3.core.drone.service.DroneNotFoundException;
 import com.otonomc3.core.drone.service.LinkStatus;
 import org.junit.jupiter.api.Test;
@@ -102,6 +104,50 @@ class CommandControllerTest {
 				.andExpect(jsonPath("$.armed").value(false))
 				.andExpect(jsonPath("$.altRel").value(0.4))
 				.andExpect(jsonPath("$.minAltRel").value(10.0));
+	}
+
+	@Test
+	void takeoffWhileAirborneIs409() throws Exception {
+		when(service.issue(eq(1), eq(CommandType.TAKEOFF), any())).thenThrow(new DroneInFlightException(
+				DroneInFlightException.ALREADY_AIRBORNE, 1, CommandType.TAKEOFF, true, 120.0, 22.0));
+
+		mvc.perform(post("/api/drones/1/commands").contentType(MediaType.APPLICATION_JSON)
+						.content("{\"type\":\"TAKEOFF\",\"params\":{\"alt\":60}}"))
+				.andExpect(status().isConflict())
+				.andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+				.andExpect(jsonPath("$.title").value("Drone in flight"))
+				.andExpect(jsonPath("$.detail").value("İHA zaten havada"))
+				.andExpect(jsonPath("$.droneId").value(1))
+				.andExpect(jsonPath("$.commandType").value("TAKEOFF"))
+				.andExpect(jsonPath("$.armed").value(true))
+				.andExpect(jsonPath("$.altRel").value(120.0));
+	}
+
+	@Test
+	void takeoffInNoFlyZoneIs409() throws Exception {
+		when(service.issue(eq(1), eq(CommandType.TAKEOFF), any()))
+				.thenThrow(new TakeoffInNoFlyZoneException(1, List.of("Havalimanı", "Askeri alan")));
+
+		mvc.perform(post("/api/drones/1/commands").contentType(MediaType.APPLICATION_JSON).content("{\"type\":\"TAKEOFF\"}"))
+				.andExpect(status().isConflict())
+				.andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+				.andExpect(jsonPath("$.title").value("Takeoff in no-fly zone"))
+				.andExpect(jsonPath("$.detail").value("Kalkış noktası yasak bölgede: Havalimanı, Askeri alan"))
+				.andExpect(jsonPath("$.zones[0]").value("Havalimanı"))
+				.andExpect(jsonPath("$.zones[1]").value("Askeri alan"));
+	}
+
+	@Test
+	void disarmInFlightIs409() throws Exception {
+		when(service.issue(eq(1), eq(CommandType.DISARM), any())).thenThrow(new DroneInFlightException(
+				DroneInFlightException.DISARM_IN_FLIGHT, 1, CommandType.DISARM, true, 40.0, 18.0));
+
+		mvc.perform(post("/api/drones/1/commands").contentType(MediaType.APPLICATION_JSON).content("{\"type\":\"DISARM\"}"))
+				.andExpect(status().isConflict())
+				.andExpect(jsonPath("$.title").value("Drone in flight"))
+				.andExpect(jsonPath("$.detail").value("İHA havadayken motor kapatılamaz"))
+				.andExpect(jsonPath("$.commandType").value("DISARM"))
+				.andExpect(jsonPath("$.groundSpeed").value(18.0));
 	}
 
 	@Test

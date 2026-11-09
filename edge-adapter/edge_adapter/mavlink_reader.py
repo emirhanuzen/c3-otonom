@@ -10,7 +10,7 @@ Based on experiments/read_fleet.py, with two differences:
 The reader stores the latest raw message of each wanted type per aircraft.
 Turning them into JSON (and converting units) is the job of schema.py.
 
-Command replies (COMMAND_ACK, PARAM_VALUE) are not stored but handed to the
+Command replies (COMMAND_ACK, PARAM_VALUE, STATUSTEXT) are not stored but handed to the
 listeners registered with add_listener(), and connection_for() gives the
 connection an aircraft is read from, so commands go out on that same link.
 """
@@ -26,7 +26,8 @@ log = logging.getLogger(__name__)
 # The MAVLink message types we care about. Everything else is ignored.
 WANTED = {"HEARTBEAT", "GLOBAL_POSITION_INT", "VFR_HUD", "SYS_STATUS", "GPS_RAW_INT"}
 # Replies to commands, passed on to the listeners instead of being stored.
-FORWARDED = {"COMMAND_ACK", "PARAM_VALUE"}
+# STATUSTEXT carries the autopilot's reason for refusing to arm ("PreArm: ...").
+FORWARDED = {"COMMAND_ACK", "PARAM_VALUE", "STATUSTEXT"}
 
 RECONNECT_INTERVAL_S = 5  # seconds between two connection attempts of one aircraft
 # pymavlink does not raise when SITL closes the TCP socket, recv() just keeps
@@ -66,7 +67,7 @@ class MavlinkReader:
         self._listeners = []
 
     def add_listener(self, listener):
-        """Register listener(system_id, msg), called for every COMMAND_ACK and PARAM_VALUE."""
+        """Register listener(system_id, msg), called for every COMMAND_ACK, PARAM_VALUE and STATUSTEXT."""
         self._listeners.append(listener)
 
     def connection_for(self, sysid):

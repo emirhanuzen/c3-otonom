@@ -115,6 +115,8 @@
 	const GOTO_DEFAULT_ALT_M = 100;
 	const TOAST_ACCEPTED_MS = 5000;
 	const TOAST_FAILED_MS = 10000;
+	/** A refused command's detail (e.g. the PreArm reasons of a refused takeoff) needs time to be read. */
+	const TOAST_REJECTED_MS = 20000;
 	/** A PENDING toast normally turns final within 12 s (the core's timeout); this is a safety net. */
 	const TOAST_PENDING_MS = 20000;
 	const COMMAND_STATUS_MEMORY = 200;
@@ -126,6 +128,22 @@
 	const AIRBORNE_COMMANDS = new Set(['GOTO', 'LOITER', 'RESUME_MISSION']);
 	const MIN_AIRBORNE_ALT_REL_M = 10;
 	const ON_GROUND_REASON = 'İHA yerde, önce kalkış yapılmalı';
+	/** TAKEOFF limits and default, as in CommandValidator. */
+	const TAKEOFF_DEFAULT_ALT_M = 60;
+	const TAKEOFF_MIN_ALT_M = 30;
+	const TAKEOFF_MAX_ALT_M = 300;
+	const ALREADY_AIRBORNE_REASON = 'İHA zaten havada';
+	/**
+	 * RTL is only greyed out here: the core still accepts it on the ground
+	 * (CommandType.requiresAirborne), this just keeps the operator from sending a no-op.
+	 */
+	const RTL_ON_GROUND_REASON = 'İHA yerde';
+	/** The core refuses DISARM at or above these (CommandValidator.DISARM_MAX_ALT_REL / _GROUND_SPEED). */
+	const DISARM_MAX_ALT_REL_M = 5;
+	const DISARM_MAX_GROUND_SPEED_MS = 3;
+	const DISARM_IN_FLIGHT_REASON = 'İHA havadayken motor kapatılamaz';
+	const DISARMED_REASON = 'Motorlar zaten kapalı';
+	const ARMED_UNKNOWN_REASON = 'Motorların durumu bilinmiyor';
 
 	let selectedDroneId = null;
 	/** The command waiting for a GOTO point or for the confirm box: { type, droneId, params?, marker? }. */
@@ -138,6 +156,8 @@
 	let commandTargetEl;
 	let commandButtons = [];
 	let commandHintEl;
+	let takeoffAltEl;
+	let takeoffButtonEl;
 	let confirmEl;
 	let confirmTextEl;
 	let confirmYesEl;
@@ -165,6 +185,16 @@
 					<button type="button" data-command="RESUME_MISSION">Göreve devam</button>
 					<button type="button" data-command="LOITER">Bekle</button>
 					<button type="button" data-command="GOTO">Noktaya git</button>
+				</div>
+				<div class="command-ground">
+					<label class="takeoff-alt" title="Kalkış irtifası, eve göre (${TAKEOFF_MIN_ALT_M}-${TAKEOFF_MAX_ALT_M} m)">
+						<span class="takeoff-alt-label">Kalkış irtifası</span>
+						<input type="number" min="${TAKEOFF_MIN_ALT_M}" max="${TAKEOFF_MAX_ALT_M}" step="1"
+							value="${TAKEOFF_DEFAULT_ALT_M}" inputmode="numeric">
+						<span>m</span>
+					</label>
+					<button type="button" class="takeoff-button" data-command="TAKEOFF">Havalan (${TAKEOFF_DEFAULT_ALT_M} m)</button>
+					<button type="button" data-command="DISARM">Motoru kapat</button>
 				</div>
 				<div class="command-hint" hidden>Hedef için haritaya tıklayın · ESC: iptal</div>
 				<div class="command-confirm" hidden>
@@ -345,8 +375,16 @@
 
 	function setupCommandControls(container) {
 		commandTargetEl = container.querySelector('.command-target');
-		commandButtons = [...container.querySelectorAll('.command-buttons button')];
+		commandButtons = [...container.querySelectorAll('.command-controls button[data-command]')];
 		commandHintEl = container.querySelector('.command-hint');
+		takeoffAltEl = container.querySelector('.takeoff-alt input');
+		takeoffButtonEl = container.querySelector('.takeoff-button');
+		takeoffAltEl.addEventListener('input', updateTakeoffButtonLabel);
+		takeoffAltEl.addEventListener('keydown', (event) => {
+			if (event.key === 'Enter') {
+				onCommandButton('TAKEOFF');
+			}
+		});
 		confirmEl = container.querySelector('.command-confirm');
 		confirmTextEl = confirmEl.querySelector('.text');
 		confirmYesEl = confirmEl.querySelector('.confirm-yes');
@@ -395,17 +433,20 @@
 		}
 		const online = isOnline(selectedDroneId);
 		commandButtons.forEach((button) => {
-			const grounded = online && isGroundBlocked(selectedDroneId, button.dataset.command);
-			button.disabled = !online || pendingCommand !== null || grounded;
-			// Shown on hover; the same reason is also in the target line above the buttons.
-			button.title = grounded ? ON_GROUND_REASON : '';
-			button.classList.toggle('grounded', grounded);
+			const reason = online ? blockReason(selectedDroneId, button.dataset.command) : null;
+			button.disabled = !online || pendingCommand !== null || reason !== null;
+			// Shown on hover; the on-ground reason is also in the target line above the buttons.
+			button.title = reason ?? '';
+			button.classList.toggle('grounded', reason !== null);
+			if (button.dataset.command === 'TAKEOFF') {
+				takeoffAltEl.disabled = button.disabled;
+			}
 		});
 		const pendingBlocked = pendingCommand !== null
-			&& isGroundBlocked(pendingCommand.droneId, pendingCommand.type);
+			&& blockReason(pendingCommand.droneId, pendingCommand.type) !== null;
 		confirmYesEl.disabled = !(pendingCommand && isOnline(pendingCommand.droneId)) || pendingBlocked;
-		// A drone that drops offline or lands while its GOTO point is being picked or
-		// confirmed cannot take it.
+		// A drone that drops offline, or whose state no longer allows the command (it
+		// landed during a GOTO, took off during a TAKEOFF), cannot take it.
 		if ((pickingTarget && !online) || pendingBlocked) {
 			cancelPendingCommand();
 		}
@@ -420,17 +461,83 @@
 		return state?.status?.armed === false || (altRel != null && altRel < MIN_AIRBORNE_ALT_REL_M);
 	}
 
-	function isGroundBlocked(droneId, type) {
-		return AIRBORNE_COMMANDS.has(type) && isOnGround(drones.get(droneId)?.state);
+	/** Like the core's TAKEOFF check: armed at or above MIN_AIRBORNE_ALT_REL_M. */
+	function isAirborne(state) {
+		const altRel = state?.position?.altRel;
+		return state?.status?.armed === true && altRel != null && altRel >= MIN_AIRBORNE_ALT_REL_M;
+	}
+
+	/** Like the core's DISARM check: high or fast enough to be flying (or rolling). */
+	function isMoving(state) {
+		const altRel = state?.position?.altRel;
+		const speed = state?.velocity?.groundSpeed;
+		return (altRel != null && altRel >= DISARM_MAX_ALT_REL_M)
+			|| (speed != null && speed >= DISARM_MAX_GROUND_SPEED_MS);
+	}
+
+	/**
+	 * Why the drone's latest state does not allow the command, or null. Mirrors the
+	 * core's 409 checks; DISARM is stricter and needs a drone known to be armed.
+	 */
+	function blockReason(droneId, type) {
+		const state = drones.get(droneId)?.state;
+		if (AIRBORNE_COMMANDS.has(type)) {
+			return isOnGround(state) ? ON_GROUND_REASON : null;
+		}
+		if (type === 'TAKEOFF') {
+			return isAirborne(state) ? ALREADY_AIRBORNE_REASON : null;
+		}
+		if (type === 'RTL') {
+			return state?.status?.armed === false ? RTL_ON_GROUND_REASON : null;
+		}
+		if (type === 'DISARM') {
+			const armed = state?.status?.armed;
+			if (armed === false) {
+				return DISARMED_REASON;
+			}
+			if (armed !== true) {
+				return ARMED_UNKNOWN_REASON;
+			}
+			return isMoving(state) ? DISARM_IN_FLIGHT_REASON : null;
+		}
+		return null;
+	}
+
+	/** The altitude in the takeoff box, or null when it is not a number within the limits. */
+	function takeoffAltitude() {
+		const alt = Number(takeoffAltEl.value);
+		if (takeoffAltEl.value.trim() === '' || !Number.isFinite(alt)
+			|| alt < TAKEOFF_MIN_ALT_M || alt > TAKEOFF_MAX_ALT_M) {
+			return null;
+		}
+		return Math.round(alt);
+	}
+
+	/** Keeps the altitude in the takeoff button's label in step with the box. */
+	function updateTakeoffButtonLabel() {
+		const alt = takeoffAltitude();
+		takeoffButtonEl.textContent = alt === null ? 'Havalan' : `Havalan (${alt} m)`;
 	}
 
 	function onCommandButton(type) {
 		const droneId = selectedDroneId;
-		if (!isOnline(droneId) || pendingCommand || isGroundBlocked(droneId, type)) {
+		if (!isOnline(droneId) || pendingCommand || blockReason(droneId, type) !== null) {
 			return;
 		}
 		if (type === 'GOTO') {
 			startPickingTarget(droneId);
+		} else if (type === 'TAKEOFF') {
+			const alt = takeoffAltitude();
+			if (alt === null) {
+				showToast('failed', `${label(droneId)} · ${Commands.TYPE_LABELS.TAKEOFF}`, 'Gönderilemedi',
+					`İrtifa ${TAKEOFF_MIN_ALT_M}-${TAKEOFF_MAX_ALT_M} m arasında olmalı`, TOAST_FAILED_MS);
+				takeoffAltEl.focus();
+				return;
+			}
+			takeoffAltEl.value = String(alt);
+			updateTakeoffButtonLabel();
+			askConfirm({ type, droneId, params: { alt } },
+				`${label(droneId)} ${alt} m'ye havalanacak. Onaylıyor musun?`, 'Havalan');
 		} else if (type === 'RTL') {
 			askConfirm({ type, droneId, params: {} }, `${label(droneId)} eve dönsün mü?`);
 		} else {
@@ -469,9 +576,10 @@
 		}
 	});
 
-	function askConfirm(command, text) {
+	function askConfirm(command, text, yesLabel = 'Gönder') {
 		pendingCommand = command;
 		confirmTextEl.textContent = text;
+		confirmYesEl.textContent = yesLabel;
 		confirmEl.hidden = false;
 		updateCommandControls();
 		confirmYesEl.focus();
@@ -479,7 +587,7 @@
 
 	function confirmPendingCommand() {
 		const command = pendingCommand;
-		if (!command || !isOnline(command.droneId) || isGroundBlocked(command.droneId, command.type)) {
+		if (!command || !isOnline(command.droneId) || blockReason(command.droneId, command.type) !== null) {
 			return;
 		}
 		pendingCommand = null;
@@ -588,8 +696,12 @@
 		}
 		toast.status = command.status;
 		const cls = Commands.statusClass(command.status);
-		const detail = cls === 'failed' ? command.detail : null;
-		const duration = cls === 'pending' ? TOAST_PENDING_MS : (cls === 'accepted' ? TOAST_ACCEPTED_MS : TOAST_FAILED_MS);
+		// The adapter separates the parts of a detail with "; " (e.g. one per PreArm reason).
+		const detail = cls === 'failed' ? command.detail?.split('; ').join('\n') : null;
+		let duration = cls === 'pending' ? TOAST_PENDING_MS : (cls === 'accepted' ? TOAST_ACCEPTED_MS : TOAST_FAILED_MS);
+		if (command.status === 'REJECTED') {
+			duration = TOAST_REJECTED_MS;
+		}
 		toast.element = renderToast(toast.element, cls, `${label(command.droneId)} · ${Commands.typeLabel(command)}`,
 			Commands.statusLabel(command.status), detail);
 		clearTimeout(toast.timer);

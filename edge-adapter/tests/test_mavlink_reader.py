@@ -29,7 +29,10 @@ def test_command_replies_go_to_listeners_and_are_not_stored():
     reader._handle(link, from_aircraft(mavlink.MAVLink_param_value_message(
         param_id=b"ALT_HOLD_RTL", param_value=2000, param_type=9, param_count=1, param_index=0)), now=1.0)
 
-    assert received == [(3, "COMMAND_ACK"), (3, "PARAM_VALUE")]
+    reader._handle(link, from_aircraft(mavlink.MAVLink_statustext_message(
+        severity=2, text=b"PreArm: GPS not healthy")), now=1.0)
+
+    assert received == [(3, "COMMAND_ACK"), (3, "PARAM_VALUE"), (3, "STATUSTEXT")]
     assert 3 not in reader.fleet
 
 
